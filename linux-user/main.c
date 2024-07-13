@@ -64,6 +64,8 @@ unsigned long mmap_min_addr;
 uintptr_t guest_base;
 bool have_guest_base;
 
+/* CGI fuzz */
+extern char * afl_inputfile;
 /*
  * Used to implement backwards-compatibility for the `-strace`, and
  * QEMU_STRACE options. Without this, the QEMU_LOG can be overwritten by
@@ -929,6 +931,15 @@ int main(int argc, char **argv, char **envp)
     ts->bprm = &bprm;
     cpu->opaque = ts;
     task_settid(ts);
+
+    /* CGI fuzz*/
+    afl_inputfile = malloc(4096);
+    snprintf(afl_inputfile, 4096, "%s", target_argv[1]);
+    if (getenv("AFL_DEBUG")) {
+        fprintf(stderr, "[DEBUG] Input file:%s\n", afl_inputfile);
+        fprintf(stderr, "[DEBUG] Pid:%d\n", ts->ts_tid);
+    }
+        
 
     ret = loader_exec(execfd, exec_path, target_argv, target_environ, regs,
         info, &bprm);

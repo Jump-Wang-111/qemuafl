@@ -48,8 +48,11 @@
 #include "qemuafl/common.h"
 #include "qemuafl/imported/snapshot-inl.h"
 
+#include "cgifuzz.h"
+
 #include <string.h>
 #include <sys/shm.h>
+#include <sys/mman.h>
 #ifndef AFL_QEMU_STATIC_BUILD
   #include <dlfcn.h>
 #endif
@@ -631,9 +634,55 @@ void afl_setup(void) {
 
 }
 
+/** CGI fuzz
+ * filled in qemu main.c
+*/
+char* afl_inputfile;
+
+
 /* Fork server logic, invoked once we hit _start. */
 
 void afl_forkserver(CPUState *cpu) {
+
+  /** CGI fuzz
+  * get full path of input file
+  */
+  if (getenv("AFL_DEBUG"))
+    fprintf(stderr, "[DEBUG] In afl forkserser.Input file: %s\n", afl_inputfile);
+  
+  uint64_t g2h_environ_addr = libc_environ_addr();
+  abi_ulong g_environ = h_gaddr(g2h_environ_addr);
+  
+  abi_ulong i;
+  for (i = 0; g_value(g_environ + i); i += 4);
+  abi_ulong old_entries   = i / 4;
+  abi_ulong new_entries   = 128;
+
+  abi_ulong new_env_list  = target_mmap(0,
+                                        (old_entries + new_entries + 2) * sizeof(abi_ulong),
+                                        PROT_READ|PROT_WRITE,
+                                        MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
+  
+  abi_ulong new_env_strs  = target_mmap(0,
+                                        (new_entries + 2) * ENV_MAX_LEN,
+                                        PROT_READ|PROT_WRITE,
+                                        MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
+  
+  memcpy(g2h_untagged(new_env_list), g2h_untagged(g_environ), sizeof(abi_ulong) * old_entries);
+  g_value(g_environ + i + 4) = 0;
+  
+  g_environ = *(abi_ulong*)g2h_environ_addr = new_env_list;
+  if (getenv("AFL_DEBUG")) {
+    fprintf(stderr, "[DEBUG] Set new env list: %lx\n", new_env_list);
+    fprintf(stderr, "[DEBUG] Set new env strs: %lx\n", new_env_strs);
+  }
+
+  g_value(g_environ + i) = new_env_strs;
+  g_value(g_environ + i + 4) = 0;
+  strcpy(g2h_untagged(new_env_strs), "PATH_INFO=/index");
+  
+  // target_munmap(new_env_list, (old_entries + new_entries + 2) * sizeof(abi_ulong));
+  // target_munmap(new_env_strs, (new_entries + 2) * ENV_MAX_LEN);
 
   // u32           map_size = 0;
   unsigned char tmp[4] = {0};
@@ -701,7 +750,10 @@ void afl_forkserver(CPUState *cpu) {
     if (child_stopped && was_killed) {
 
       child_stopped = 0;
-      if (waitpid(child_pid, &status, 0) < 0) exit(8);
+      if (waitpid(child_pid, &status, 0) < 0) {
+        //TODO: mumap 
+        exit(8);
+      }
 
     }
 
@@ -724,6 +776,89 @@ void afl_forkserver(CPUState *cpu) {
         close(FORKSRV_FD);
         close(FORKSRV_FD + 1);
         close(t_fd[0]);
+
+        /* CGI fuzz: read file*/
+        int fd = open(afl_inputfile, O_RDONLY);
+        if (fd < 0) {
+          perror("open"); 
+          return;
+        }
+        int size = lseek(fd, 0, SEEK_END);
+        if (size < 0) {
+          perror("seek end"); 
+          return;
+        }
+        int ret = lseek(fd, 0, SEEK_SET);
+        if (ret < 0) {
+          perror("seek set"); 
+          return;
+        }
+        int inputlen = 1024*1024;
+        char* input = malloc(inputlen);
+        if (input == NULL) {
+            perror("malloc");
+            return;
+        }
+        int bytes_read = read(fd, input, inputlen);
+
+        /* CGI fuzz: read env and stdin for cgi*/
+        char* p = input;
+        struct env
+        {
+          char key[1024];
+          char value[ENV_MAX_LEN];
+        };
+        struct env cgi_env[128];
+        int num = 0;
+        char* content = NULL;
+        while (p < input + size) {
+            char* line = p;
+            while (*p != '\n' && p < input + size) {
+                p++;
+            }
+            if (p > line) {
+                *p = '\0';
+                char *token = strtok(line, "=");
+                if (!strcmp(token, "CONTENT")) content = token + 8;
+                int len = strlen(token);
+                strncpy(cgi_env[num].key, token, sizeof(cgi_env[num].key));
+
+                token += (len + 1);
+                len = strlen(token);
+                strncpy(cgi_env[num].value, token, sizeof(cgi_env[num].value));
+                num++;
+            }
+            p++;
+        }
+
+        /* CGI fuzz: setenv*/
+        int i = 0;
+        for (i = 0; i < num; i++) {
+          if (strcmp(cgi_env[i].key, "CONTENT")) {
+            setenv(cgi_env[i].key, cgi_env[i].value, 1);
+            if (getenv("AFL_DEBUG"))
+              fprintf(stderr, "[DEBUG] setenv:%s\n", cgi_env[i].key);
+          }
+        }
+        if (getenv("AFL_DEBUG"))
+          fprintf(stderr, "[DEBUG] %s=%s\n", "PATH_INFO", getenv("PATH_INFO"));
+
+        /* CGI fuzz: hack stdin, from `afl-cgi-wrapper`*/
+        int fds[2];
+        pipe(fds);
+        close(STDIN_FILENO);
+        dup2(fds[0], STDIN_FILENO);
+
+        if (content) {
+          int real_content_length = write(fds[1], content, strlen(content));
+          setenv("CONTENT_LENGTH", real_content_length, 1);
+        }
+        
+        if (getenv("AFL_DEBUG"))
+          fprintf(stderr, "DEBUG: All env and input ready.\n");
+        
+        free(input);
+        free(afl_inputfile);
         return;
 
       }
@@ -752,7 +887,10 @@ void afl_forkserver(CPUState *cpu) {
 
     /* Get and relay exit status to parent. */
 
-    if (waitpid(child_pid, &status, is_persistent ? WUNTRACED : 0) < 0) exit(6);
+    if (waitpid(child_pid, &status, is_persistent ? WUNTRACED : 0) < 0) {
+      //TODO: mumap  
+      exit(6);
+    }
 
     /* In persistent mode, the child stops itself with SIGSTOP to indicate
        a successful run. In this case, we want to wake it up without forking
@@ -763,6 +901,7 @@ void afl_forkserver(CPUState *cpu) {
     else if (unlikely(first_run && is_persistent)) {
 
       fprintf(stderr, "[AFL] ERROR: no persistent iteration executed\n");
+      //TODO: mumap 
       exit(12);  // Persistent is wrong
 
     }

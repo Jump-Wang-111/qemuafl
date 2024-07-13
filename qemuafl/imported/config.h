@@ -26,7 +26,7 @@
 /* Version string: */
 
 // c = release, a = volatile github dev, e = experimental branch
-#define VERSION "++4.20a"
+#define VERSION "++4.22a"
 
 /******************************************************
  *                                                    *
@@ -324,9 +324,9 @@
 #define SYNC_INTERVAL 8
 
 /* Sync time (minimum time between syncing in ms, time is halfed for -M main
-   nodes) - default is 30 minutes: */
+   nodes) - default is 20 minutes: */
 
-#define SYNC_TIME (30 * 60 * 1000)
+#define SYNC_TIME (20 * 60 * 1000)
 
 /* Output directory reuse grace period (minutes): */
 
@@ -464,7 +464,7 @@
 /* Do not change this unless you really know what you are doing. */
 
 #define MAP_SIZE (1U << MAP_SIZE_POW2)
-#if MAP_SIZE <= 65536
+#if MAP_SIZE <= 2097152
   #define MAP_INITIAL_SIZE (2 << 20)  // = 2097152
 #else
   #define MAP_INITIAL_SIZE MAP_SIZE
