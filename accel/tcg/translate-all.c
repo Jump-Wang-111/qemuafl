@@ -68,6 +68,7 @@
 #include "qemuafl/imported/afl_hash.h"
 
 #include <math.h>
+#include "cgifuzz.h"
 
 __thread int cur_block_is_good;
 
@@ -2090,6 +2091,22 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
 
     tcg_ctx->cpu = env_cpu(env);
     afl_gen_trace(pc);
+    
+    /* CGI fuzz: hook arg */
+    if (pc == hook[GETENV].addr) {
+        gen_helper_cgi_hook_getenv_arg(cpu_env);
+    }
+    if (pc == hook[REGCOMP].addr) {
+        gen_helper_cgi_hook_regcomp_arg(cpu_env);
+    }
+    if (pc == hook[REGEXEC].addr) {
+        gen_helper_cgi_hook_regexec_arg(cpu_env);
+    }
+    
+    /* CGI fuzz: hook ret */
+    TCGv tcg_pc = tcg_const_tl(pc);
+    gen_helper_cgi_hook_func_ret(cpu_env, tcg_pc);
+
     gen_intermediate_code(cpu, tb, max_insns);
     tcg_ctx->cpu = NULL;
     max_insns = tb->icount;

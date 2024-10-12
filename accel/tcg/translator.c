@@ -34,6 +34,9 @@ void translator_loop_temp_check(DisasContextBase *db)
     }
 }
 
+// extern target_ulong getenv_addr;
+// target_ulong caller_addr;
+
 void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
                      CPUState *cpu, TranslationBlock *tb, int max_insns)
 {
@@ -118,6 +121,12 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
             }
             gen_helper_afl_entry_routine(cpu_env);
         }
+
+        /*CGI fuzz*/
+        // if (db->pc_next == getenv_addr) {
+        //     gen_helper_cgi_hook_func_arg(cpu_env);
+        //     caller_addr = 1;
+        // }
 
         /* Disassemble one instruction.  The translate_insn hook should
            update db->pc_next and db->is_jmp to indicate what should be

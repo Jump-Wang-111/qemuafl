@@ -105,6 +105,10 @@ u8 * shared_buf;
 u32 *shared_buf_len;
 u8   sharedmem_fuzzing;
 
+/* CGI FUZZ */
+static void cgi_shm_feedback(void);
+static void cgi_shm_regex(void);
+
 afl_persistent_hook_fn afl_persistent_hook_ptr;
 
 /* Instrumentation ratio: */
@@ -278,6 +282,75 @@ static void restore_memory_snapshot(void) {
   }
   
   afl_target_unmap_trackeds();
+
+}
+
+/* CGI FUZZ */
+static void cgi_shm_feedback(void) {
+  
+  char *id_str = getenv(SHM_CGI_FD_ENV_VAR);
+
+  if (id_str) {
+
+    u32 shm_id = atoi(id_str);
+    u8 *map = (u8 *)shmat(shm_id, NULL, 0);
+    /* Whooooops. */
+
+    if (!map || map == (void *)-1) {
+
+      perror("[ERROR] Could not access cgi feedback shared memory");
+      exit(1);
+
+    }
+
+    cgi_feedback = (cgi_fd *)map;
+
+    if (getenv("CGI_DEBUG")) {
+
+      fprintf(stderr, "[DEBUG] Successfully got cgi feedback shared memory\n");
+
+    }
+
+  } else {
+
+    fprintf(stderr,
+            "[ERROR] Variable for cgi feedback shared memory is not set\n");
+    exit(1);
+  }
+
+}
+
+static void cgi_shm_regex(void) {
+  
+  char *id_str = getenv(SHM_CGI_RE_ENV_VAR);
+
+  if (id_str) {
+
+    u32 shm_id = atoi(id_str);
+    u8 *map = (u8 *)shmat(shm_id, NULL, 0);
+    /* Whooooops. */
+
+    if (!map || map == (void *)-1) {
+
+      perror("[ERROR] Could not access cgi feedback shared memory");
+      exit(1);
+
+    }
+
+    cgi_regex = (regex_env *)map;
+
+    if (getenv("CGI_DEBUG")) {
+
+      fprintf(stderr, "[DEBUG] Successfully got cgi feedback shared memory\n");
+
+    }
+
+  } else {
+
+    fprintf(stderr,
+            "[ERROR] Variable for cgi feedback shared memory is not set\n");
+    exit(1);
+  }
 
 }
 
@@ -634,8 +707,9 @@ void afl_setup(void) {
 
 }
 
+
 /** CGI fuzz
- * filled in qemu main.c
+ * afl_inputfile filled in qemu main.c
 */
 char* afl_inputfile;
 
@@ -644,45 +718,41 @@ char* afl_inputfile;
 
 void afl_forkserver(CPUState *cpu) {
 
-  /** CGI fuzz
-  * get full path of input file
-  */
-  if (getenv("AFL_DEBUG"))
-    fprintf(stderr, "[DEBUG] In afl forkserser.Input file: %s\n", afl_inputfile);
-  
-  uint64_t g2h_environ_addr = libc_environ_addr();
-  abi_ulong g_environ = h_gaddr(g2h_environ_addr);
-  
-  abi_ulong i;
-  for (i = 0; g_value(g_environ + i); i += 4);
-  abi_ulong old_entries   = i / 4;
-  abi_ulong new_entries   = 128;
+  /* CGI fuzz
+  * hook env for cgi fuzz
+  */  
+  get_libc_sym_addr();
+  target_ulong g_environ_addr = hook[ENVIRON].addr;
+  uint64_t g2h_environ_addr = g2h_untagged(g_environ_addr);
+  target_ulong g_environ = gval_from_h(g2h_environ_addr);
 
-  abi_ulong new_env_list  = target_mmap(0,
-                                        (old_entries + new_entries + 2) * sizeof(abi_ulong),
+  if (getenv("CGI_DEBUG")) {
+    fprintf(stderr, "[DEBUG] Getenv func addr: 0x%08x\n", g_environ);
+  }
+    
+  target_ulong i;
+  for (i = 0; gval_from_g(g_environ + i); i += 4);
+  target_ulong old_entries   = i / 4;
+  target_ulong new_entries   = ENV_MAX_ENTRY;
+
+  target_ulong new_env_list  = target_mmap(0,
+                                        (old_entries + new_entries + 2) * sizeof(target_ulong),
                                         PROT_READ|PROT_WRITE,
                                         MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
   
-  abi_ulong new_env_strs  = target_mmap(0,
+  target_ulong new_env_strs  = target_mmap(0,
                                         (new_entries + 2) * ENV_MAX_LEN,
                                         PROT_READ|PROT_WRITE,
                                         MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
   
-  memcpy(g2h_untagged(new_env_list), g2h_untagged(g_environ), sizeof(abi_ulong) * old_entries);
-  g_value(g_environ + i + 4) = 0;
+  memcpy(g2h_untagged(new_env_list), g2h_untagged(g_environ), sizeof(target_ulong) * old_entries);
+  gval_from_g(g_environ + i) = 0;
   
-  g_environ = *(abi_ulong*)g2h_environ_addr = new_env_list;
-  if (getenv("AFL_DEBUG")) {
+  g_environ = *(target_ulong*)g2h_environ_addr = new_env_list;
+  if (getenv("CGI_DEBUG")) {
     fprintf(stderr, "[DEBUG] Set new env list: %lx\n", new_env_list);
     fprintf(stderr, "[DEBUG] Set new env strs: %lx\n", new_env_strs);
   }
-
-  g_value(g_environ + i) = new_env_strs;
-  g_value(g_environ + i + 4) = 0;
-  strcpy(g2h_untagged(new_env_strs), "PATH_INFO=/index");
-  
-  // target_munmap(new_env_list, (old_entries + new_entries + 2) * sizeof(abi_ulong));
-  // target_munmap(new_env_strs, (new_entries + 2) * ENV_MAX_LEN);
 
   // u32           map_size = 0;
   unsigned char tmp[4] = {0};
@@ -735,13 +805,20 @@ void afl_forkserver(CPUState *cpu) {
 
   }
 
+  cgi_shm_feedback();
+  cgi_shm_regex();
+
   /* All right, let's await orders... */
 
   while (1) {
 
     /* Whoops, parent dead? */
 
-    if (read(FORKSRV_FD, &was_killed, 4) != 4) exit(2);
+    if (read(FORKSRV_FD, &was_killed, 4) != 4) {
+      target_munmap(new_env_list, (old_entries + new_entries + 2) * sizeof(target_ulong));
+      target_munmap(new_env_strs, (new_entries + 2) * ENV_MAX_LEN);
+      exit(2);
+    }
 
     /* If we stopped the child in persistent mode, but there was a race
        condition and afl-fuzz already issued SIGKILL, write off the old
@@ -751,7 +828,8 @@ void afl_forkserver(CPUState *cpu) {
 
       child_stopped = 0;
       if (waitpid(child_pid, &status, 0) < 0) {
-        //TODO: mumap 
+        //TODO: mumap  
+        fprintf(stderr, "[DEBUG] loc2");
         exit(8);
       }
 
@@ -762,11 +840,17 @@ void afl_forkserver(CPUState *cpu) {
       /* Establish a channel with child to grab translation commands. We'll
        read from t_fd[0], child will write to TSL_FD. */
 
-      if (pipe(t_fd) || dup2(t_fd[1], TSL_FD) < 0) exit(3);
+      if (pipe(t_fd) || dup2(t_fd[1], TSL_FD) < 0) {
+        fprintf(stderr, "[DEBUG] loc3");
+        exit(3);
+      }
       close(t_fd[1]);
 
       child_pid = fork();
-      if (child_pid < 0) exit(4);
+      if (child_pid < 0) {
+        fprintf(stderr, "[DEBUG] loc4");
+        exit(4);
+      }
 
       if (!child_pid) {
 
@@ -776,88 +860,21 @@ void afl_forkserver(CPUState *cpu) {
         close(FORKSRV_FD);
         close(FORKSRV_FD + 1);
         close(t_fd[0]);
-
-        /* CGI fuzz: read file*/
-        int fd = open(afl_inputfile, O_RDONLY);
-        if (fd < 0) {
-          perror("open"); 
-          return;
-        }
-        int size = lseek(fd, 0, SEEK_END);
-        if (size < 0) {
-          perror("seek end"); 
-          return;
-        }
-        int ret = lseek(fd, 0, SEEK_SET);
-        if (ret < 0) {
-          perror("seek set"); 
-          return;
-        }
-        int inputlen = 1024*1024;
-        char* input = malloc(inputlen);
-        if (input == NULL) {
-            perror("malloc");
-            return;
-        }
-        int bytes_read = read(fd, input, inputlen);
-
-        /* CGI fuzz: read env and stdin for cgi*/
-        char* p = input;
-        struct env
-        {
-          char key[1024];
-          char value[ENV_MAX_LEN];
-        };
-        struct env cgi_env[128];
-        int num = 0;
-        char* content = NULL;
-        while (p < input + size) {
-            char* line = p;
-            while (*p != '\n' && p < input + size) {
-                p++;
-            }
-            if (p > line) {
-                *p = '\0';
-                char *token = strtok(line, "=");
-                if (!strcmp(token, "CONTENT")) content = token + 8;
-                int len = strlen(token);
-                strncpy(cgi_env[num].key, token, sizeof(cgi_env[num].key));
-
-                token += (len + 1);
-                len = strlen(token);
-                strncpy(cgi_env[num].value, token, sizeof(cgi_env[num].value));
-                num++;
-            }
-            p++;
-        }
-
-        /* CGI fuzz: setenv*/
-        int i = 0;
-        for (i = 0; i < num; i++) {
-          if (strcmp(cgi_env[i].key, "CONTENT")) {
-            setenv(cgi_env[i].key, cgi_env[i].value, 1);
-            if (getenv("AFL_DEBUG"))
-              fprintf(stderr, "[DEBUG] setenv:%s\n", cgi_env[i].key);
-          }
-        }
-        if (getenv("AFL_DEBUG"))
-          fprintf(stderr, "[DEBUG] %s=%s\n", "PATH_INFO", getenv("PATH_INFO"));
-
+        
+        set_guest_env(afl_inputfile, g2h_untagged(g_environ + i), g2h_untagged(new_env_strs));
+        // if (getenv("CGI_DEBUG")) debug_env(g_environ);
         /* CGI fuzz: hack stdin, from `afl-cgi-wrapper`*/
-        int fds[2];
-        pipe(fds);
-        close(STDIN_FILENO);
-        dup2(fds[0], STDIN_FILENO);
+        // int fds[2];
+        // pipe(fds);
+        // close(STDIN_FILENO);
+        // dup2(fds[0], STDIN_FILENO);
 
-        if (content) {
-          int real_content_length = write(fds[1], content, strlen(content));
-          setenv("CONTENT_LENGTH", real_content_length, 1);
-        }
+        // if (content) {
+        //   int real_content_length = write(fds[1], content, strlen(content));
+        //   setenv("CONTENT_LENGTH", real_content_length, 1);
+        // }
         
-        if (getenv("AFL_DEBUG"))
-          fprintf(stderr, "DEBUG: All env and input ready.\n");
-        
-        free(input);
+        // free(input);
         free(afl_inputfile);
         return;
 
@@ -879,7 +896,10 @@ void afl_forkserver(CPUState *cpu) {
 
     /* Parent. */
 
-    if (write(FORKSRV_FD + 1, &child_pid, 4) != 4) exit(5);
+    if (write(FORKSRV_FD + 1, &child_pid, 4) != 4) {
+      fprintf(stderr, "[DEBUG] loc5");
+      exit(5);
+    }
 
     /* Collect translation requests until child dies and closes the pipe. */
 
@@ -888,7 +908,7 @@ void afl_forkserver(CPUState *cpu) {
     /* Get and relay exit status to parent. */
 
     if (waitpid(child_pid, &status, is_persistent ? WUNTRACED : 0) < 0) {
-      //TODO: mumap  
+      fprintf(stderr, "[DEBUG] loc6");
       exit(6);
     }
 
@@ -901,17 +921,106 @@ void afl_forkserver(CPUState *cpu) {
     else if (unlikely(first_run && is_persistent)) {
 
       fprintf(stderr, "[AFL] ERROR: no persistent iteration executed\n");
-      //TODO: mumap 
       exit(12);  // Persistent is wrong
 
     }
 
     first_run = 0;
 
-    if (write(FORKSRV_FD + 1, &status, 4) != 4) exit(7);
+    if (write(FORKSRV_FD + 1, &status, 4) != 4) {
+      fprintf(stderr, "[DEBUG] loc7");
+      exit(7);
+    }
 
   }
 
+}
+
+
+void cgi_get_getenv_arg(CPUArchState *env) {
+  hook[GETENV].arg1 = env->regs[0];
+  hook[GETENV].ret_addr = env->regs[14];
+}
+
+void cgi_get_regcomp_arg(CPUArchState *env) {
+  target_ulong arg1     = hook[REGCOMP].arg1      = env->regs[0];
+  target_ulong arg2     = hook[REGCOMP].arg2      = env->regs[1];
+  target_ulong arg3     = hook[REGCOMP].arg3      = env->regs[2];
+  target_ulong ret_addr = hook[REGCOMP].ret_addr  = env->regs[14];
+  
+  int key = hash_map_int(arg1);
+
+  if (cgi_regex->all_regex_map[key]) return;
+  
+  cgi_regex->all_regex_map[key] = 1;
+  strcpy(cgi_regex->all_regex_val[key], g2h_untagged(arg2));
+  // if (getenv("HOOK_DEBUG"))
+  //   fprintf(stderr, "[HOOK] Add regex map(%s)=%s\n", key, g2h_untagged(arg2));
+}
+
+void cgi_get_regexec_arg(CPUArchState *env) {
+  target_ulong arg1     = hook[REGEXEC].arg1      = env->regs[0];
+  target_ulong arg2     = hook[REGEXEC].arg2      = env->regs[1];
+  target_ulong arg3     = hook[REGEXEC].arg3      = env->regs[2];
+  target_ulong arg4     = hook[REGEXEC].arg4      = env->regs[3];
+  target_ulong ret_addr = hook[REGEXEC].ret_addr  = env->regs[14];
+
+  int key = hash_map_int(arg1);
+  char *path = cgi_regex->all_regex_val[key];
+
+  if (strncmp(g2h_untagged(arg2), path_info, path_info_len)) {
+    fprintf(stderr, "[DEBUG] Regexec for other str\n");
+    return;
+  }
+
+  if (cgi_regex->path_info_map[key]) return;
+  
+  cgi_regex->path_info_map[key] = 1;
+  strcpy(cgi_regex->path_info_str[cgi_regex->num_of_regex], path);
+  strcpy(cgi_regex->path_info_r[cgi_regex->num_of_regex++], path);
+  
+  if (getenv("HOOK_DEBUG")) {
+    fprintf(stderr, "[HOOK] Add regex map(%x)=%s\n", key, path);
+    // fprintf(stderr, "[HOOK] Add regex map(%x)=%s\n", key, cgi_regex->path_info_str[cgi_regex->num_of_regex - 1]);
+    // fprintf(stderr, "[HOOK] Next addr: 0x%08x\n", cgi_regex->path_info_str[cgi_regex->num_of_regex]);
+    fprintf(stderr, "[HOOK] Now num is: %d\n", cgi_regex->num_of_regex);
+  }
+
+}
+
+void cgi_get_call_ret(CPUArchState *env, target_ulong pc) {
+  
+  if (pc == hook[GETENV].ret_addr) {
+
+    target_ulong ret = env->regs[0];
+    hook[GETENV].ret_addr = 0;
+    char *env_name = g2h_untagged(hook[GETENV].arg1);
+
+    if (ret != 0) {
+      if (getenv("HOOK_DEBUG"))
+        fprintf(stderr, "[HOOK] getenv(%s)=%s\n", env_name, g2h_untagged(ret));
+      return;
+    }
+    
+    if (getenv("HOOK_DEBUG"))
+      fprintf(stderr, "[HOOK] getenv(%s)=NULL\n", env_name);
+    
+    /* update shared mem, tell afl to add new env */
+    for (int i = 0; i < cgi_feedback->num; i++) {
+      char *p = cgi_feedback->buf + i * ENV_NAME_MAX_LEN;
+      if (!strcmp(p, env_name)) return;
+    }
+    
+    strcpy(cgi_feedback->buf + cgi_feedback->num * ENV_NAME_MAX_LEN, env_name);
+    cgi_feedback->num++;
+    if (getenv("HOOK_DEBUG")) {
+      fprintf(stderr, "[HOOK] Successful add %s to shm\n", env_name);
+      fprintf(stderr, "[HOOK] cur num %d\n", cgi_feedback->num);
+    }
+  
+  }
+  
+  
 }
 
 /* A simplified persistent mode handler, used as explained in

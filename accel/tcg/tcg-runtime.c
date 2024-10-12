@@ -34,6 +34,23 @@
 
 #include "qemuafl/common.h"
 
+/* CGI fuzz*/
+void HELPER(cgi_hook_getenv_arg)(CPUArchState *env) {
+  cgi_get_getenv_arg(env);
+}
+
+void HELPER(cgi_hook_regcomp_arg)(CPUArchState *env) {
+  cgi_get_regcomp_arg(env);
+}
+
+void HELPER(cgi_hook_regexec_arg)(CPUArchState *env) {
+  cgi_get_regexec_arg(env);
+}
+
+void HELPER(cgi_hook_func_ret)(CPUArchState *env, target_ulong pc) {
+  cgi_get_call_ret(env, pc);
+}
+
 uint32_t afl_hash_ip(uint64_t);
 
 void HELPER(afl_entry_routine)(CPUArchState *env) {

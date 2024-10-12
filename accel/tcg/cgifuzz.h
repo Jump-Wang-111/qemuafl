@@ -1,3 +1,15 @@
+#ifndef __CGIFUZZ_H
+#define __CGIFUZZ_H
+
+#include "qemu/osdep.h"
+#include "qemu-common.h"
+#include "qemu/qemu-print.h"
+#include "cpu.h"
+#include "exec/exec-all.h"
+#include "tcg/tcg.h"
+
+#include "qemuafl/common.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,12 +18,18 @@
 #include <elf.h>
 #include <regex.h>
 
-#define g_value(g_addr)     *(abi_ulong*)g2h_untagged(g_addr)
-#define g_haddr(g_addr)     g2h_untagged(g_value(g_addr))
-#define h_gaddr(h_addr)     *(abi_ulong*)(h_addr)
-#define h_haddr(h_addr)     g2h_untagged(h_gaddr(h_addr))
+#define gval_from_h(h_addr)     *(target_ulong*)(h_addr)
+#define gval_from_g(g_addr)     gval_from_h(g2h_untagged(g_addr))
+#define haddr_from_g(g_addr)    g2h_untagged(gval_from_g(g_addr))
+#define haddr_from_h(h_addr)    g2h_untagged(gval_from_h(h_addr))
 
-#define ENV_MAX_LEN 4096
+#define SHM_CGI_FD_ENV_VAR  "__AFL_SHM_CGI_FD_ID"
+#define SHM_CGI_RE_ENV_VAR  "__AFL_SHM_CGI_RE_ID"
+#define ENV_MAX_LEN         4096
+#define ENV_MAX_ENTRY       256
+#define ENV_NAME_MAX_LEN    128
+
+#define hash_map_int(x)     (x & 0xffff) >> 4
 
 typedef struct {
     char address[32];
@@ -19,199 +37,72 @@ typedef struct {
     unsigned long offset;
     char dev[8];
     unsigned long inode;
-    char pathname[1024];
+    char pathname[512];
 } MapEntry;
 
-void parse_map_line(char *line, MapEntry *entry) {
-    int fields = sscanf(line, "%31s %7s %lx %7s %lu %255s[^\n]",
-                        entry->address,
-                        entry->perms,
-                        &entry->offset,
-                        entry->dev,
-                        &entry->inode,
-                        entry->pathname);
-    if (fields < 6) {
-        entry->pathname[0] = '\0';
-    }
-}
+typedef struct {
+    char            name[64];
+    target_ulong    addr;
+    target_ulong    ret_addr;
+    target_ulong    arg1;
+    target_ulong    arg2;
+    target_ulong    arg3;
+    target_ulong    arg4;
+} func_info;
 
-MapEntry** loadmaps() {
-    
-    int fd = open("/proc/self/maps", O_RDONLY);
-    if (fd < 0) {
-        perror("loadmaps: open");
-        return NULL;
-    }
+/* Func to hook */
+enum {
+    ENVIRON,
+    GETENV,
+    REGCOMP,
+    REGEXEC,
+    FUNC_COUNT
+};
 
-    char* buf = (char* )malloc(1024*1024), *_buf = buf;
-    int byte_read;
-    while((byte_read = read(fd, _buf, 1024)) > 0) {
-        _buf += byte_read;
-    }
-    int size = _buf - buf;
-    buf[size] = 0;
-    close(fd);
+typedef struct cgi_fd {
+  u32   num;
+  char  buf[0];
+} cgi_fd;
 
-    int i = 0;
-    MapEntry** maplist;
-    maplist = (MapEntry**)malloc(1024 * sizeof(MapEntry*));
-    char *line = strtok(buf, "\n");
-    while (line != NULL) {
-        MapEntry* entry = (MapEntry*)malloc(sizeof(MapEntry));
-        parse_map_line(line, entry);
-        maplist[i++] = entry;
-        line = strtok(NULL, "\n");
-    }
-    maplist[i] = 0;
+typedef struct regex_env {
+  u8        all_regex_map[1 << 12];
+  char      all_regex_val[1 << 12][1 << 8];
 
-    return maplist;
-}
+  char      env_name[128];
+  u8        path_info_map[1 << 12];
+  int       num_of_regex;
+  char      path_info_str[1 << 12][1 << 8];
+  char      path_info_r[1 << 12][1 << 8];
+} regex_env;
 
-int is_libc_mapping(char* path) {
-    /* First match libc.so.6*/
-    if(strstr(path, "libc.so.6") != NULL) {
-        return 1;
-    }
+extern cgi_fd       *cgi_feedback;
+extern regex_env    *cgi_regex;
+extern func_info    hook[FUNC_COUNT];
+extern char         path_info[ENV_NAME_MAX_LEN];;
+extern int          path_info_len;
 
-    /* Then match libc-<version>.so*/
-    const char *pattern = "libc-[0-9]+\\.[0-9]+\\.so";
-    regex_t regex;
-    int ret;
-    
-    ret = regcomp(&regex, pattern, REG_EXTENDED);
-    if (ret) {
-        fprintf(stderr, "is_libc_mapping: Could not compile regex\n");
-        exit(EXIT_FAILURE);
-    }
+void parse_map_line(char *line, MapEntry *entry);
 
-    ret = regexec(&regex, path, 0, NULL, 0);
-    regfree(&regex);
+MapEntry** loadmaps(void);
 
-    if (!ret) {
-        return 1; // Match
-    } else if (ret == REG_NOMATCH) {
-        return 0; // No match
-    } else {
-        char msgbuf[100];
-        regerror(ret, &regex, msgbuf, sizeof(msgbuf));
-        fprintf(stderr, "is_libc_mapping: Regex match failed: %s\n", msgbuf);
-        exit(EXIT_FAILURE);
-    }
-}
+int is_libc_mapping(char* path);
 
-void get_libc_info(MapEntry** maplist, uint64_t* start, char** path) {
-    uint64_t end;
-    int i = 0;
-    for(i = 0; maplist[i]; i++) {
-        MapEntry* entry = maplist[i];
-        if (is_libc_mapping(entry->pathname)) {
-            sscanf(entry->address, "%lx-%lx", start, &end);
-            *path = entry->pathname;
-            break;
-        }
-    }
-}
+void get_libc_info(MapEntry** maplist, uint64_t* start, char** path);
 
-void read_section_headers32(int fd, Elf32_Ehdr *ehdr, Elf32_Shdr **shdrs) {
-    *shdrs = malloc(ehdr->e_shentsize * ehdr->e_shnum);
-    lseek(fd, ehdr->e_shoff, SEEK_SET);
-    read(fd, *shdrs, ehdr->e_shentsize * ehdr->e_shnum);
-}
+void read_section_headers32(int fd, Elf32_Ehdr *ehdr, Elf32_Shdr **shdrs);
 
-void read_section32(int fd, Elf32_Shdr *shdr, char **buffer) {
-    *buffer = malloc(shdr->sh_size);
-    lseek(fd, shdr->sh_offset, SEEK_SET);
-    read(fd, *buffer, shdr->sh_size);
-}
+void read_section32(int fd, Elf32_Shdr *shdr, char **buffer);
 
-Elf32_Addr get_environ_off(char* libc_path) {
-    int fd = open(libc_path, O_RDONLY);
-    if (fd < 0) {
-        perror("get_environ_off: open");
-        return 1;
-    }
+Elf32_Addr get_sym_off(char *libc_path, char *sym_name);
 
-    unsigned char e_ident[EI_NIDENT];
-    read(fd, e_ident, EI_NIDENT);
-    if (memcmp(e_ident, ELFMAG, SELFMAG) != 0) {
-        perror("get_environ_off: Not an ELF file\n");
-        close(fd);
-        return 1;
-    }
+void freemaps(MapEntry** maplist);
 
-    lseek(fd, 0, SEEK_SET);
-    
-    Elf32_Ehdr ehdr;
-    read(fd, &ehdr, sizeof(ehdr));
+void debug_env(target_ulong g_environ);
 
-    Elf32_Shdr *shdrs;
-    read_section_headers32(fd, &ehdr, &shdrs);
+void get_libc_sym_addr(void);
 
-    for (int i = 0; i < ehdr.e_shnum; i++) {
-        if (shdrs[i].sh_type != SHT_DYNSYM)
-            continue;
-        char *symtab, *strtab;
-        Elf32_Shdr *strtab_hdr = &shdrs[shdrs[i].sh_link];
-        read_section32(fd, &shdrs[i], &symtab);
-        read_section32(fd, strtab_hdr, &strtab);
+char* get_guest_env(const char *name, char **env_list);
 
-        int sym_count = shdrs[i].sh_size / shdrs[i].sh_entsize;
-        for (int j = 0; j < sym_count; j++) {
-            Elf32_Sym *sym = (Elf32_Sym *)(symtab + j * shdrs[i].sh_entsize);
-            if (strcmp(&strtab[sym->st_name], "environ") == 0) {
-                if (getenv("AFL_DEBUG"))
-                    fprintf(stderr, "Found symbol 'environ' at address 0x%x\n", sym->st_value);
-                free(symtab);
-                free(strtab);
-                free(shdrs);
-                close(fd);
-                return sym->st_value;
-            }
-        }
-    }
-    if (getenv("AFL_DEBUG"))
-        fprintf(stderr, "Symbol 'environ' not found\n");
-    free(shdrs);
-    return 0;
-}
+void set_guest_env(char *inputfile, char **env_list, char *env_strs);
 
-void freemaps(MapEntry** maplist) {
-    for(int i = 0; maplist[i]; i++) {
-        free(maplist[i]);
-  }
-  free(maplist);
-}
-
-void debug_env(abi_ulong g_environ) {
-    abi_ulong i;
-    uint64_t g2h_environ = g2h_untagged(g_environ);
-    for (i = 0; *(abi_ulong*)(g2h_environ + i); i += 4) {
-      fprintf(stderr, "[DEBUG] envp: %s\n", (char*)h_haddr(g2h_environ + i));
-    }
-    fprintf(stderr, "[DEBUG] totol: %d\n", i / 4);
-}
-
-uint64_t libc_environ_addr() {
-    MapEntry** maplist = loadmaps();
-
-    uint64_t start;
-    char* libc_path;
-    get_libc_info(maplist, &start, &libc_path);
-    
-    uint64_t offset = get_environ_off(libc_path);
-    uint64_t g2h_environ_addr = start + offset;
-
-    abi_ulong g_environ_addr = h2g(g2h_environ_addr);
-    abi_ulong g_environ = h_gaddr(g2h_environ_addr);
-    
-    if (getenv("AFL_DEBUG")) {
-        fprintf(stderr, "[DEBUG] libc_start: %lx\n", start);
-        fprintf(stderr, "[DEBUG] libc_path: %s\n", libc_path);
-        fprintf(stderr, "[DEBUG] g_environ_addr: %08x\n", g_environ_addr);
-        fprintf(stderr, "[DEBUG] g_environ: %08x\n", g_environ);
-        // debug_env(g_environ);
-    }
-
-    freemaps(maplist);
-    return g2h_environ_addr;
-}
+#endif

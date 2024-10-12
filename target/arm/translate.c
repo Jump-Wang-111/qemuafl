@@ -9285,7 +9285,7 @@ static void arm_post_translate_insn(DisasContext *dc)
 }
 
 static void arm_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
-{
+{   
     DisasContext *dc = container_of(dcbase, DisasContext, base);
     CPUARMState *env = cpu->env_ptr;
     unsigned int insn;

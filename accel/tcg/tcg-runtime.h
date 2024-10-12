@@ -345,6 +345,12 @@ DEF_HELPER_FLAGS_3(afl_cmplog_32, TCG_CALL_NO_RWG, void, tl, tl, tl)
 DEF_HELPER_FLAGS_3(afl_cmplog_64, TCG_CALL_NO_RWG, void, tl, tl, tl)
 DEF_HELPER_FLAGS_1(afl_cmplog_rtn, TCG_CALL_NO_RWG, void, env)
 
+/* CGI fuzz*/
+DEF_HELPER_FLAGS_1(cgi_hook_getenv_arg, TCG_CALL_NO_RWG, void, env)
+DEF_HELPER_FLAGS_1(cgi_hook_regcomp_arg, TCG_CALL_NO_RWG, void, env)
+DEF_HELPER_FLAGS_1(cgi_hook_regexec_arg, TCG_CALL_NO_RWG, void, env)
+DEF_HELPER_FLAGS_2(cgi_hook_func_ret, TCG_CALL_NO_RWG, void, env, tl)
+
 DEF_HELPER_FLAGS_5(qasan_fake_instr, TCG_CALL_NO_RWG, tl, env, tl, tl, tl, tl)
 DEF_HELPER_FLAGS_2(qasan_load1, TCG_CALL_NO_RWG, void, env, tl)
 DEF_HELPER_FLAGS_2(qasan_load2, TCG_CALL_NO_RWG, void, env, tl)
