@@ -332,7 +332,7 @@ static void cgi_shm_regex(void) {
 
     if (!map || map == (void *)-1) {
 
-      perror("[ERROR] Could not access cgi feedback shared memory");
+      perror("[ERROR] Could not access cgi regex shared memory");
       exit(1);
 
     }
@@ -341,14 +341,14 @@ static void cgi_shm_regex(void) {
 
     if (getenv("CGI_DEBUG")) {
 
-      fprintf(stderr, "[DEBUG] Successfully got cgi feedback shared memory\n");
+      fprintf(stderr, "[DEBUG] Successfully got cgi regex shared memory\n");
 
     }
 
   } else {
 
     fprintf(stderr,
-            "[ERROR] Variable for cgi feedback shared memory is not set\n");
+            "[ERROR] Variable for cgi regex shared memory is not set\n");
     exit(1);
   }
 
@@ -649,6 +649,12 @@ void afl_setup(void) {
 
   }
   
+  /* CGI FUZZ */
+  if (getenv("CGI_PERSISTENT")) {
+    sharedmem_fuzzing = 1;
+    afl_persistent_hook_ptr = cheat_persistent_ptr;
+  }
+
   if (__afl_cmp_map) return; // no persistent for cmplog
   
   is_persistent = getenv("AFL_QEMU_PERSISTENT_ADDR") != NULL;
@@ -711,8 +717,9 @@ void afl_setup(void) {
 /** CGI fuzz
  * afl_inputfile filled in qemu main.c
 */
-char* afl_inputfile;
-
+char *afl_inputfile;
+char **env_list;
+char *env_strs;
 
 /* Fork server logic, invoked once we hit _start. */
 
@@ -749,6 +756,8 @@ void afl_forkserver(CPUState *cpu) {
   gval_from_g(g_environ + i) = 0;
   
   g_environ = *(target_ulong*)g2h_environ_addr = new_env_list;
+  env_list = (char **)g2h_untagged(g_environ + i);
+  env_strs = (char *)g2h_untagged(new_env_strs);
   if (getenv("CGI_DEBUG")) {
     fprintf(stderr, "[DEBUG] Set new env list: %lx\n", new_env_list);
     fprintf(stderr, "[DEBUG] Set new env strs: %lx\n", new_env_strs);
@@ -817,6 +826,8 @@ void afl_forkserver(CPUState *cpu) {
     if (read(FORKSRV_FD, &was_killed, 4) != 4) {
       target_munmap(new_env_list, (old_entries + new_entries + 2) * sizeof(target_ulong));
       target_munmap(new_env_strs, (new_entries + 2) * ENV_MAX_LEN);
+      free(afl_inputfile);
+      fprintf(stderr, "[DEBUG] parent dead");
       exit(2);
     }
 
@@ -860,22 +871,12 @@ void afl_forkserver(CPUState *cpu) {
         close(FORKSRV_FD);
         close(FORKSRV_FD + 1);
         close(t_fd[0]);
-        
-        set_guest_env(afl_inputfile, g2h_untagged(g_environ + i), g2h_untagged(new_env_strs));
-        // if (getenv("CGI_DEBUG")) debug_env(g_environ);
-        /* CGI fuzz: hack stdin, from `afl-cgi-wrapper`*/
-        // int fds[2];
-        // pipe(fds);
-        // close(STDIN_FILENO);
-        // dup2(fds[0], STDIN_FILENO);
 
-        // if (content) {
-        //   int real_content_length = write(fds[1], content, strlen(content));
-        //   setenv("CONTENT_LENGTH", real_content_length, 1);
-        // }
+        if (!getenv("CGI_PERSISTENT")) {
+          set_guest_env_file(afl_inputfile, env_list, env_strs);
+          if (getenv("CGI_DEBUG_ENV")) debug_env(g_environ);
+        }
         
-        // free(input);
-        free(afl_inputfile);
         return;
 
       }
@@ -1066,6 +1067,11 @@ void afl_persistent_iter(CPUArchState *env) {
       struct api_regs hook_regs = saved_regs;
       afl_persistent_hook_ptr(&hook_regs, guest_base, shared_buf,
                               *shared_buf_len);
+      /* CGI FUZZ */
+      if (getenv("CGI_PERSISTENT")) {
+        set_guest_env_persistent(shared_buf, *shared_buf_len, env_list, env_strs);
+        if (getenv("CGI_DEBUG_ENV")) debug_env(h2g(env_list));
+      }
       afl_restore_regs(&hook_regs, env);
 
     }
@@ -1218,7 +1224,7 @@ static void afl_wait_tsl(CPUState *cpu, int fd) {
     if (read(fd, &t, sizeof(struct afl_tsl)) != sizeof(struct afl_tsl)) break;
 
     /* Exit command for persistent */
-
+    if (getenv("DEBUG_TRANS")) fprintf(stderr, "[DEBUG] translate pc: %08x\n", t.tb.pc);
     if (t.tb.pc == (target_ulong)(-1)) return;
 
     tb = afl_tb_lookup(cpu, t.tb.pc, t.tb.cs_base, t.tb.flags, t.tb.cf_mask);

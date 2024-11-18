@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include <elf.h>
 #include <regex.h>
+#include <time.h>
 
 #define gval_from_h(h_addr)     *(target_ulong*)(h_addr)
 #define gval_from_g(g_addr)     gval_from_h(g2h_untagged(g_addr))
@@ -103,6 +104,12 @@ void get_libc_sym_addr(void);
 
 char* get_guest_env(const char *name, char **env_list);
 
-void set_guest_env(char *inputfile, char **env_list, char *env_strs);
+void set_guest_env(char *input, int length, char **env_list, char *env_strs);
+
+void set_guest_env_file(char *inputfile, char **env_list, char *env_strs);
+
+void cheat_persistent_ptr(struct api_regs *, uint64_t , uint8_t *, uint32_t );
+
+void set_guest_env_persistent(uint8_t *input_buf, uint32_t input_buf_len, char **env_list, char *env_strs);
 
 #endif

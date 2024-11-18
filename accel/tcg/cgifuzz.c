@@ -158,8 +158,8 @@ Elf32_Addr get_sym_off(char *libc_path, char *sym_name) {
             }
         }
     }
-    if (getenv("CGI_DEBUG"))
-        fprintf(stderr, "Symbol 'environ' not found\n");
+
+    fprintf(stderr, "Symbol 'environ' not found\n");
     free(shdrs);
     return 0;
 }
@@ -183,7 +183,8 @@ void debug_env(target_ulong g_environ) {
 void get_libc_sym_addr() {
 
     MapEntry** maplist = loadmaps();
-    uint64_t start, offset;
+    uint64_t start;
+    target_ulong offset;
     char* libc_path;
 
     get_libc_info(maplist, &start, &libc_path);
@@ -194,7 +195,18 @@ void get_libc_sym_addr() {
 
     for (int i = 0; i < FUNC_COUNT; i++) {
         offset = get_sym_off(libc_path, hook[i].name);
-        hook[i].addr = h2g(start + offset);
+        
+        /*
+            If the file specifies a load address, 
+            the symbol table will return the actual address; 
+            if the file does not specify a load address, 
+            which defaults to 0, 
+            then the address must be calculated manually.
+        */
+        if (offset >= h2g(start))
+            hook[i].addr = offset;
+        else
+            hook[i].addr = h2g(start) + offset;
         
         if (getenv("CGI_DEBUG")) {
             fprintf(stderr, "[DEBUG] g_%s_addr: %08x\n", hook[i].name, hook[i].addr);
@@ -219,7 +231,72 @@ char* get_guest_env (const char *name, char **env_list) {
     return NULL;
 }
 
-void set_guest_env(char *inputfile, char **env_list, char *env_strs) {
+// void set_guest_env_1(char **env_list, char *env_strs) {
+
+// }
+
+void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
+    
+    char *env_st = input, *ed = env_st + length, *env_end = env_st;
+    char **o_env_list = env_list;
+    // fprintf(stderr, "[DEBUG] %x\n", env_list);
+    while (env_st < ed) {
+
+        while (*env_end != '\n') env_end++;
+        *env_end++ = '\0';
+
+        strncpy(env_strs, env_st, ENV_MAX_LEN - ENV_NAME_MAX_LEN);
+        gval_from_h(env_list) = h2g(env_strs);
+        if (getenv("CGI_DEBUG_ENV")) fprintf(stderr, "[DEBUG] Add env: %s\n", env_st);
+
+        env_strs += ENV_MAX_LEN;
+        env_list = (char **)((uint64_t)env_list + sizeof(target_ulong));
+
+        env_st = env_end;
+    }
+    gval_from_h(env_list) = 0;
+
+    /* Cache some env*/
+    char *p = get_guest_env("PATH_INFO", o_env_list);
+    
+    if (p != NULL) {
+        strcpy(path_info, p);
+        path_info_len = strlen(path_info);
+    }
+    else {
+        fprintf(stderr, "[ERROR] No path_info\n");
+    }
+
+    /* CGI fuzz: hack stdin, from `afl-cgi-wrapper`*/
+    int fds[2];
+    if (pipe(fds)) {
+        fprintf(stderr, "[ERROR] Fail to redirect stdin\n");
+        return;
+    }
+    dup2(fds[0], STDIN_FILENO);
+    close(fds[0]);
+
+    char *content = get_guest_env("CONTENT", o_env_list);
+    if (content) {
+        int content_length = write(fds[1], content, strlen(content));
+        if (content_length == -1) 
+            fprintf(stderr, "[ERROR] Fail to write to pipe\n");
+        
+        /* set env for CONTENT_LENGTH */
+        snprintf(env_strs, ENV_MAX_LEN, "CONTENT_LENGTH=%d", content_length);
+        if (getenv("CGI_DEBUG_ENV")) fprintf(stderr, "%s\n", env_strs);
+        
+        gval_from_h(env_list) = h2g(env_strs);
+        env_strs += ENV_MAX_LEN;
+        
+        env_list = (char **)((uint64_t)env_list + sizeof(target_ulong));
+        gval_from_h(env_list) = 0;
+        
+    }
+    close(fds[1]);
+}
+
+void set_guest_env_file(char *inputfile, char **env_list, char *env_strs) {
     
     int fd = open(inputfile, O_RDONLY);
     if (fd < 0) {
@@ -244,35 +321,17 @@ void set_guest_env(char *inputfile, char **env_list, char *env_strs) {
     }
 
     int bytes_read = read(fd, input, inputlen);
-    char *env_st = input, *ed = env_st + bytes_read, *env_end = env_st;
-    char **o_env_list = env_list;
-    // fprintf(stderr, "[DEBUG] %x\n", env_list);
-    while (env_st < ed) {
+    close(fd);
 
-        while (*env_end != '\n') env_end++;
-        *env_end++ = '\0';
-
-        strncpy(env_strs, env_st, ENV_MAX_LEN);
-        gval_from_h(env_list) = h2g(env_strs);
-
-        env_strs += ENV_MAX_LEN;
-        env_list = (char **)((uint64_t)env_list + sizeof(target_ulong));
-
-        env_st = env_end;
-    }
-    gval_from_h(env_list) = 0;
-    
+    set_guest_env(input, bytes_read, env_list, env_strs);
     free(input);
-
-    /* Cache some env*/
-    char *p = get_guest_env("PATH_INFO", o_env_list);
-    
-    if (p != NULL) {
-        strcpy(path_info, p);
-        path_info_len = strlen(path_info);
-    }
-    else {
-        fprintf(stderr, "[ERROR] No path_info\n");
-    }
 }
 
+void cheat_persistent_ptr(struct api_regs *regs, uint64_t guest_base,
+                         uint8_t *input_buf, uint32_t input_buf_len) {
+    return;
+}
+
+void set_guest_env_persistent(uint8_t *input_buf, uint32_t input_buf_len, char **env_list, char *env_strs) {
+    set_guest_env((char *)input_buf, (int)input_buf_len, env_list, env_strs);
+}
