@@ -1,14 +1,22 @@
 #include "cgifuzz.h"
 
 cgi_fd      *cgi_feedback;
+int         use_cgi_feedback;
 regex_env   *cgi_regex;
+int         use_cgi_regex;
 char        path_info[ENV_NAME_MAX_LEN];
 int         path_info_len;
 func_info   hook[FUNC_COUNT] = {
-    [ENVIRON]   = {"environ", 0, 0, 0, 0, 0, 0},
-    [GETENV]    = {"getenv", 0, 0, 0, 0, 0, 0},
-    [REGCOMP]   = {"regcomp", 0, 0, 0, 0, 0, 0},
-    [REGEXEC]   = {"regexec", 0, 0, 0, 0, 0, 0}
+    [ENVIRON]       = {"environ", 0, 0, 0, 0, 0, 0},
+    [GETENV]        = {"getenv", 0, 0, 0, 0, 0, 0},
+    [REGCOMP]       = {"regcomp", 0, 0, 0, 0, 0, 0},
+    [REGEXEC]       = {"regexec", 0, 0, 0, 0, 0, 0},
+    [STRCMP]        = {"strcmp", 0, 0, 0, 0, 0, 0},
+    [STRNCMP]       = {"strncmp", 0, 0, 0, 0, 0, 0},
+    [STRCASECMP]    = {"strcasecmp", 0, 0, 0, 0, 0, 0},
+    [STRNCASECMP]   = {"strncasecmp", 0, 0, 0, 0, 0, 0},
+    [STRSTR]        = {"strstr", 0, 0, 0, 0, 0, 0},
+    [STRTOK]        = {"strtok", 0, 0, 0, 0, 0, 0}
 };
 
 void parse_map_line(char *line, MapEntry *entry) {
@@ -216,7 +224,7 @@ void get_libc_sym_addr() {
     freemaps(maplist);
 }
 
-char* get_guest_env (const char *name, char **env_list) {
+char* get_guest_env(const char *name, char **env_list) {
   
     if (env_list == NULL || name[0] == '\0') return NULL;
 
@@ -264,7 +272,7 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
         path_info_len = strlen(path_info);
     }
     else {
-        fprintf(stderr, "[ERROR] No path_info\n");
+        fprintf(stderr, "[WARN] No path_info\n");
     }
 
     /* CGI fuzz: hack stdin, from `afl-cgi-wrapper`*/

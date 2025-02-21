@@ -304,6 +304,7 @@ static void cgi_shm_feedback(void) {
     }
 
     cgi_feedback = (cgi_fd *)map;
+    use_cgi_feedback = 1;
 
     if (getenv("CGI_DEBUG")) {
 
@@ -315,7 +316,8 @@ static void cgi_shm_feedback(void) {
 
     fprintf(stderr,
             "[ERROR] Variable for cgi feedback shared memory is not set\n");
-    exit(1);
+    // exit(1);
+    use_cgi_feedback = 0;
   }
 
 }
@@ -338,6 +340,7 @@ static void cgi_shm_regex(void) {
     }
 
     cgi_regex = (regex_env *)map;
+    use_cgi_regex = 1;
 
     if (getenv("CGI_DEBUG")) {
 
@@ -349,7 +352,8 @@ static void cgi_shm_regex(void) {
 
     fprintf(stderr,
             "[ERROR] Variable for cgi regex shared memory is not set\n");
-    exit(1);
+    // exit(1);
+    use_cgi_regex = 0;
   }
 
 }
@@ -944,6 +948,9 @@ void cgi_get_getenv_arg(CPUArchState *env) {
 }
 
 void cgi_get_regcomp_arg(CPUArchState *env) {
+  
+  if (!use_cgi_regex) return;
+  
   target_ulong arg1     = hook[REGCOMP].arg1      = env->regs[0];
   target_ulong arg2     = hook[REGCOMP].arg2      = env->regs[1];
   target_ulong arg3     = hook[REGCOMP].arg3      = env->regs[2];
@@ -955,11 +962,14 @@ void cgi_get_regcomp_arg(CPUArchState *env) {
   
   cgi_regex->all_regex_map[key] = 1;
   strcpy(cgi_regex->all_regex_val[key], g2h_untagged(arg2));
-  // if (getenv("HOOK_DEBUG"))
-  //   fprintf(stderr, "[HOOK] Add regex map(%s)=%s\n", key, g2h_untagged(arg2));
+  if (getenv("HOOK_DEBUG"))
+    fprintf(stderr, "[HOOK] Add regex map(%x)=%s, addr: %x\n", key, g2h_untagged(arg2), arg1);
 }
 
 void cgi_get_regexec_arg(CPUArchState *env) {
+
+  if (!use_cgi_regex) return;
+
   target_ulong arg1     = hook[REGEXEC].arg1      = env->regs[0];
   target_ulong arg2     = hook[REGEXEC].arg2      = env->regs[1];
   target_ulong arg3     = hook[REGEXEC].arg3      = env->regs[2];
@@ -978,10 +988,11 @@ void cgi_get_regexec_arg(CPUArchState *env) {
   
   cgi_regex->path_info_map[key] = 1;
   strcpy(cgi_regex->path_info_str[cgi_regex->num_of_regex], path);
-  strcpy(cgi_regex->path_info_r[cgi_regex->num_of_regex++], path);
+  strcpy(cgi_regex->path_info_r[cgi_regex->num_of_regex], path);
+  cgi_regex->num_of_regex++;
   
   if (getenv("HOOK_DEBUG")) {
-    fprintf(stderr, "[HOOK] Add regex map(%x)=%s\n", key, path);
+    fprintf(stderr, "[HOOK] Add regex map(0x%x)=%s, regex_t addr: 0x%x \n", key, path, arg1);
     // fprintf(stderr, "[HOOK] Add regex map(%x)=%s\n", key, cgi_regex->path_info_str[cgi_regex->num_of_regex - 1]);
     // fprintf(stderr, "[HOOK] Next addr: 0x%08x\n", cgi_regex->path_info_str[cgi_regex->num_of_regex]);
     fprintf(stderr, "[HOOK] Now num is: %d\n", cgi_regex->num_of_regex);
@@ -992,6 +1003,8 @@ void cgi_get_regexec_arg(CPUArchState *env) {
 void cgi_get_call_ret(CPUArchState *env, target_ulong pc) {
   
   if (pc == hook[GETENV].ret_addr) {
+
+    if (!use_cgi_feedback) return;
 
     target_ulong ret = env->regs[0];
     hook[GETENV].ret_addr = 0;
@@ -1009,7 +1022,7 @@ void cgi_get_call_ret(CPUArchState *env, target_ulong pc) {
     /* update shared mem, tell afl to add new env */
     for (int i = 0; i < cgi_feedback->num; i++) {
       char *p = cgi_feedback->buf + i * ENV_NAME_MAX_LEN;
-      if (!strcmp(p, env_name)) return;
+      if (!strcmp(p, env_name)) return; 
     }
     
     strcpy(cgi_feedback->buf + cgi_feedback->num * ENV_NAME_MAX_LEN, env_name);
@@ -1020,7 +1033,6 @@ void cgi_get_call_ret(CPUArchState *env, target_ulong pc) {
     }
   
   }
-  
   
 }
 

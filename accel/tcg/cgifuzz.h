@@ -30,7 +30,7 @@
 #define ENV_MAX_ENTRY       256
 #define ENV_NAME_MAX_LEN    128
 
-#define hash_map_int(x)     (x & 0xffff) >> 4
+#define hash_map_int(x)     (x & 0x1ffff) >> 5
 
 typedef struct {
     char address[32];
@@ -57,6 +57,12 @@ enum {
     GETENV,
     REGCOMP,
     REGEXEC,
+    STRCMP,
+    STRNCMP,
+    STRCASECMP,
+    STRNCASECMP,
+    STRSTR,
+    STRTOK,
     FUNC_COUNT
 };
 
@@ -77,7 +83,9 @@ typedef struct regex_env {
 } regex_env;
 
 extern cgi_fd       *cgi_feedback;
+extern int          use_cgi_feedback;
 extern regex_env    *cgi_regex;
+extern int          use_cgi_regex;
 extern func_info    hook[FUNC_COUNT];
 extern char         path_info[ENV_NAME_MAX_LEN];;
 extern int          path_info_len;
