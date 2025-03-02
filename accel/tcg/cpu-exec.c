@@ -979,8 +979,23 @@ void cgi_get_regexec_arg(CPUArchState *env) {
   int key = hash_map_int(arg1);
   char *path = cgi_regex->all_regex_val[key];
 
-  if (strncmp(g2h_untagged(arg2), path_info, path_info_len)) {
-    fprintf(stderr, "[DEBUG] Regexec for other str\n");
+  /* Feedback stage 1 */
+  if (cgi_feedback->stage == 2) return;
+  
+  if (cgi_feedback->stage == 1) {
+    
+    if (strcmp((char *)g2h_untagged(arg2), NEW_ENV_FLAG)) return;
+    
+    char *p = cgi_feedback->buf + ENV_MAX_LEN * cgi_feedback->target;
+    set_feedback_env(p, "regexec", path);
+
+    cgi_feedback->pair++;
+
+    return;
+  }
+
+  if (strncmp((char *)g2h_untagged(arg2), path_info, path_info_len)) {
+    fprintf(stderr, "[DEBUG] Regexec for other str:%s\n", g2h_untagged(arg2));
     return;
   }
 
@@ -1000,19 +1015,182 @@ void cgi_get_regexec_arg(CPUArchState *env) {
 
 }
 
+void cgi_get_strcmp_arg(CPUArchState *env) {
+  
+  if (!use_cgi_feedback) return;
+  if (cgi_feedback->stage != 1) return;
+  
+  target_ulong arg1     = hook[STRCMP].arg1      = env->regs[0];
+  target_ulong arg2     = hook[STRCMP].arg2      = env->regs[1];
+
+  char *str1 = g2h_untagged(arg1);
+  char *str2 = g2h_untagged(arg2);
+  char str[ENV_MAX_LEN];
+
+  if (!strcmp(str1, NEW_ENV_FLAG)) {
+    strcpy(str, str2);
+  }
+  else if (!strcmp(str2, NEW_ENV_FLAG)) {
+    strcpy(str, str1);
+  }
+  else {
+    return;
+  }
+
+  char *p = cgi_feedback->buf + ENV_MAX_LEN * cgi_feedback->target;
+  set_feedback_env(p, "strcmp", str);
+
+  cgi_feedback->pair++;
+
+}
+
+void cgi_get_strncmp_arg(CPUArchState *env) {
+
+  if (!use_cgi_feedback) return;
+  if (cgi_feedback->stage != 1) return;
+  
+  target_ulong arg1     = hook[STRNCMP].arg1      = env->regs[0];
+  target_ulong arg2     = hook[STRNCMP].arg2      = env->regs[1];
+
+  char *str1 = g2h_untagged(arg1);
+  char *str2 = g2h_untagged(arg2);
+  char str[ENV_MAX_LEN];
+
+  if (!strcmp(str1, NEW_ENV_FLAG)) {
+    strcpy(str, str2);
+  }
+  else if (!strcmp(str2, NEW_ENV_FLAG)) {
+    strcpy(str, str1);
+  }
+  else {
+    return;
+  }
+
+  char *p = cgi_feedback->buf + ENV_MAX_LEN * cgi_feedback->target;
+  set_feedback_env(p, "strncmp", str);
+
+  cgi_feedback->pair++;
+
+}
+
+void cgi_get_strcasecmp_arg(CPUArchState *env) {
+
+  if (!use_cgi_feedback) return;
+  if (cgi_feedback->stage != 1) return;
+
+  target_ulong arg1     = hook[STRCASECMP].arg1      = env->regs[0];
+  target_ulong arg2     = hook[STRCASECMP].arg2      = env->regs[1];
+
+  char *str1 = g2h_untagged(arg1);
+  char *str2 = g2h_untagged(arg2);
+  char str[ENV_MAX_LEN];
+
+  if (!strcmp(str1, NEW_ENV_FLAG)) {
+    strcpy(str, str2);
+  }
+  else if (!strcmp(str2, NEW_ENV_FLAG)) {
+    strcpy(str, str1);
+  }
+  else {
+    return;
+  }
+
+  char *p = cgi_feedback->buf + ENV_MAX_LEN * cgi_feedback->target;
+  set_feedback_env(p, "strcasecmp", str);
+
+  cgi_feedback->pair++;
+
+}
+
+void cgi_get_strncasecmp_arg(CPUArchState *env) {
+
+  if (!use_cgi_feedback) return;
+  if (cgi_feedback->stage != 1) return;
+
+  target_ulong arg1     = hook[STRNCASECMP].arg1      = env->regs[0];
+  target_ulong arg2     = hook[STRNCASECMP].arg2      = env->regs[1];
+  
+  char *str1 = g2h_untagged(arg1);
+  char *str2 = g2h_untagged(arg2);
+  char str[ENV_MAX_LEN];
+
+  if (!strcmp(str1, NEW_ENV_FLAG)) {
+    strcpy(str, str2);
+  }
+  else if (!strcmp(str2, NEW_ENV_FLAG)) {
+    strcpy(str, str1);
+  }
+  else {
+    return;
+  }
+
+  char *p = cgi_feedback->buf + ENV_MAX_LEN * cgi_feedback->target;
+  set_feedback_env(p, "strncasecmp", str);
+
+  cgi_feedback->pair++;
+  
+}
+
+void cgi_get_strstr_arg(CPUArchState *env) {
+
+  if (!use_cgi_feedback) return;
+  if (cgi_feedback->stage != 1) return;
+
+  target_ulong arg1     = hook[STRSTR].arg1      = env->regs[0];
+  target_ulong arg2     = hook[STRSTR].arg2      = env->regs[1];
+
+  char *str1 = g2h_untagged(arg1);
+  char *str2 = g2h_untagged(arg2);
+
+  if (strcmp(str1, NEW_ENV_FLAG)) return;
+
+  char *p = cgi_feedback->buf + ENV_MAX_LEN * cgi_feedback->target;
+  set_feedback_env(p, "strstr", str2);
+
+  cgi_feedback->pair++;
+
+}
+
+void cgi_get_strtok_arg(CPUArchState *env) {
+
+  if (!use_cgi_feedback) return;
+  if (cgi_feedback->stage != 1) return;
+  
+  target_ulong arg1     = hook[STRTOK].arg1      = env->regs[0];
+  target_ulong arg2     = hook[STRTOK].arg2      = env->regs[1];
+
+  char *str1 = g2h_untagged(arg1);
+  char *str2 = g2h_untagged(arg2);
+
+  if (strcmp(str1, NEW_ENV_FLAG)) return;
+
+  char *p = cgi_feedback->buf + ENV_MAX_LEN * cgi_feedback->target;
+  set_feedback_env(p, "strtok", str2);
+
+  cgi_feedback->pair++;
+
+}
+
 void cgi_get_call_ret(CPUArchState *env, target_ulong pc) {
   
   if (pc == hook[GETENV].ret_addr) {
-
+    
+    /* Init fail */
     if (!use_cgi_feedback) return;
 
+    /* Judge feedback stage */
+    if (cgi_feedback->stage) return;
+    
+    /* Feedback stage 0 */
     target_ulong ret = env->regs[0];
     hook[GETENV].ret_addr = 0;
     char *env_name = g2h_untagged(hook[GETENV].arg1);
 
     if (ret != 0) {
+      
       if (getenv("HOOK_DEBUG"))
         fprintf(stderr, "[HOOK] getenv(%s)=%s\n", env_name, g2h_untagged(ret));
+      
       return;
     }
     
@@ -1021,11 +1199,11 @@ void cgi_get_call_ret(CPUArchState *env, target_ulong pc) {
     
     /* update shared mem, tell afl to add new env */
     for (int i = 0; i < cgi_feedback->num; i++) {
-      char *p = cgi_feedback->buf + i * ENV_NAME_MAX_LEN;
+      char *p = cgi_feedback->buf + i * ENV_MAX_LEN;
       if (!strcmp(p, env_name)) return; 
     }
     
-    strcpy(cgi_feedback->buf + cgi_feedback->num * ENV_NAME_MAX_LEN, env_name);
+    strcpy(cgi_feedback->buf + cgi_feedback->num * ENV_MAX_LEN, env_name);
     cgi_feedback->num++;
     if (getenv("HOOK_DEBUG")) {
       fprintf(stderr, "[HOOK] Successful add %s to shm\n", env_name);
@@ -1130,6 +1308,12 @@ void afl_persistent_loop(CPUArchState *env) {
         struct api_regs hook_regs = saved_regs;
         afl_persistent_hook_ptr(&hook_regs, guest_base, shared_buf,
                                 *shared_buf_len);
+        /* CGI FUZZ */
+        if (getenv("CGI_PERSISTENT")) {
+          set_guest_env_persistent(shared_buf, *shared_buf_len, env_list, env_strs);
+          if (getenv("CGI_DEBUG_ENV")) debug_env(h2g(env_list));
+        }
+        
         afl_restore_regs(&hook_regs, env);
 
       }

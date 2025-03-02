@@ -47,6 +47,30 @@ void HELPER(cgi_hook_regexec_arg)(CPUArchState *env) {
   cgi_get_regexec_arg(env);
 }
 
+void HELPER(cgi_hook_strcmp_arg)(CPUArchState *env) {
+  cgi_get_strcmp_arg(env);
+}
+
+void HELPER(cgi_hook_strncmp_arg)(CPUArchState *env) {
+  cgi_get_strncmp_arg(env);
+}
+
+void HELPER(cgi_hook_strcasecmp_arg)(CPUArchState *env) {
+  cgi_get_strcasecmp_arg(env);
+}
+
+void HELPER(cgi_hook_strncasecmp_arg)(CPUArchState *env) {
+  cgi_get_strncasecmp_arg(env);
+}
+
+void HELPER(cgi_hook_strstr_arg)(CPUArchState *env) {
+  cgi_get_strstr_arg(env);
+}
+
+void HELPER(cgi_hook_strtok_arg)(CPUArchState *env) {
+  cgi_get_strtok_arg(env);
+}
+
 void HELPER(cgi_hook_func_ret)(CPUArchState *env, target_ulong pc) {
   cgi_get_call_ret(env, pc);
 }

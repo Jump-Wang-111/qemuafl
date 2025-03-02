@@ -2102,6 +2102,24 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     if (pc == hook[REGEXEC].addr) {
         gen_helper_cgi_hook_regexec_arg(cpu_env);
     }
+    if (pc == hook[STRCMP].addr) {
+        gen_helper_cgi_hook_strcmp_arg(cpu_env);
+    } 
+    if (pc == hook[STRNCMP].addr) {
+        gen_helper_cgi_hook_strncmp_arg(cpu_env);
+    }    
+    if (pc == hook[STRCASECMP].addr) {
+        gen_helper_cgi_hook_strcasecmp_arg(cpu_env);
+    } 
+    if (pc == hook[STRNCASECMP].addr) {
+        gen_helper_cgi_hook_strncasecmp_arg(cpu_env);
+    }
+    if (pc == hook[STRSTR].addr) {
+        gen_helper_cgi_hook_strstr_arg(cpu_env);
+    }
+    if (pc == hook[STRTOK].addr) {
+        gen_helper_cgi_hook_strtok_arg(cpu_env);
+    }
     
     /* CGI fuzz: hook ret */
     TCGv tcg_pc = tcg_const_tl(pc);

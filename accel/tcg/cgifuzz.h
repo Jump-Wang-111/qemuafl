@@ -29,6 +29,7 @@
 #define ENV_MAX_LEN         4096
 #define ENV_MAX_ENTRY       256
 #define ENV_NAME_MAX_LEN    128
+#define NEW_ENV_FLAG        "NEW_ENV"
 
 #define hash_map_int(x)     (x & 0x1ffff) >> 5
 
@@ -67,7 +68,11 @@ enum {
 };
 
 typedef struct cgi_fd {
-  u32   num;
+  int   num;
+  int   stage;
+  int   target;
+  int   pair;
+  int   tlen;
   char  buf[0];
 } cgi_fd;
 
@@ -84,10 +89,11 @@ typedef struct regex_env {
 
 extern cgi_fd       *cgi_feedback;
 extern int          use_cgi_feedback;
+extern int          feedback_stage;
 extern regex_env    *cgi_regex;
 extern int          use_cgi_regex;
 extern func_info    hook[FUNC_COUNT];
-extern char         path_info[ENV_NAME_MAX_LEN];;
+extern char         path_info[ENV_MAX_LEN - ENV_NAME_MAX_LEN];;
 extern int          path_info_len;
 
 void parse_map_line(char *line, MapEntry *entry);
@@ -116,8 +122,10 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs);
 
 void set_guest_env_file(char *inputfile, char **env_list, char *env_strs);
 
-void cheat_persistent_ptr(struct api_regs *, uint64_t , uint8_t *, uint32_t );
+void cheat_persistent_ptr(struct api_regs *, uint64_t , uint8_t *, uint32_t);
 
 void set_guest_env_persistent(uint8_t *input_buf, uint32_t input_buf_len, char **env_list, char *env_strs);
+
+void set_feedback_env(char *env, char *func, char *fb);
 
 #endif
