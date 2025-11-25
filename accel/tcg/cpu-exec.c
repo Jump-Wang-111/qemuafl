@@ -729,9 +729,9 @@ char *env_strs;
 
 void afl_forkserver(CPUState *cpu) {
 
-  /* CGI fuzz
-  * hook env for cgi fuzz
-  */  
+  /* CGI fuzz */
+
+  /* hook env for cgi fuzz */
   get_libc_sym_addr();
   target_ulong g_environ_addr = hook[ENVIRON].addr;
   uint64_t g2h_environ_addr = g2h_untagged(g_environ_addr);
@@ -766,6 +766,53 @@ void afl_forkserver(CPUState *cpu) {
     fprintf(stderr, "[DEBUG] Set new env list: %lx\n", new_env_list);
     fprintf(stderr, "[DEBUG] Set new env strs: %lx\n", new_env_strs);
   }
+
+  // ========================================================================
+  // Fixed Environment Variables (Server-Enforced)
+  // ========================================================================
+  // These variables mimic the behavior of a real web server (Lighttpd/Apache).
+  // They are placed at the VERY BEGINNING of the env array.
+  // Since getenv() typically returns the first match, this prevents the fuzzer 
+  // from overwriting critical server-side variables via HTTP headers.
+  // ========================================================================
+  const char *fixed_envs[][2] = {
+    {"GATEWAY_INTERFACE", "CGI/1.1"},         // Required by RFC 3875
+    {"SERVER_SOFTWARE",   "lighttpd/1.4.55"}, // Mock a specific server version
+    {"SERVER_ADDR",       "127.0.0.1"},       // Crucial: Prevents crash in binding checks
+    {"SERVER_PORT",       "80"},
+    {"SERVER_NAME",       "localhost"},
+    {"REMOTE_ADDR",       "127.0.0.1"},       // Mock client IP
+    {"REDIRECT_STATUS",   "200"},             // Critical: Required by many PHP-CGI binaries to run
+    {"DOCUMENT_ROOT",     "/usr/local/www"},   // Ensure this path exists in your rootfs
+    // Recommendation: Set this to the actual path of the binary in the guest
+    {"SCRIPT_FILENAME",   "/usr/local/bin/spx_restservice"}, 
+    {NULL, NULL}
+  };
+
+  i = 0;
+  while (fixed_envs[i][0]) {
+    // Construct Key=Value string safely
+    snprintf(env_strs, ENV_MAX_LEN, "%s=%s", fixed_envs[i][0], fixed_envs[i][1]);
+    
+    // Map host string address to guest address space and store in env_list
+    gval_from_h(env_list) = h2g(env_strs);
+    
+    if (getenv("CGI_DEBUG_ENV")) {
+        fprintf(stderr, "[DEBUG] Add Fixed env: %s\n", env_strs);
+    }
+
+    // Advance pointers
+    env_strs += ENV_MAX_LEN;
+    // Move to the next pointer slot (handling target pointer size)
+    env_list = (char **)((uint64_t)env_list + sizeof(target_ulong)); 
+    i++;
+  }
+
+  if (getenv("CGI_TEST_CRASH")) {
+    set_guest_env_file(afl_inputfile, env_list, env_strs);
+    if (getenv("CGI_DEBUG_ENV")) debug_env(g_environ);
+  }
+
 
   // u32           map_size = 0;
   unsigned char tmp[4] = {0};

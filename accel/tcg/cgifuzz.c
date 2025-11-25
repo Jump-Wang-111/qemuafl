@@ -240,10 +240,6 @@ char* get_guest_env(const char *name, char **env_list) {
     return NULL;
 }
 
-// void set_guest_env_1(char **env_list, char *env_strs) {
-
-// }
-
 void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
     
     // fprintf(stderr, "[DEBUG] input: %s\n", input);
@@ -251,8 +247,17 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
     // fprintf(stderr, "[DEBUG] strlen: %d\n", strlen(input));
 
     char *env_st = input, *ed = env_st + length, *env_end = env_st;
+    
+    // Save the original head of the env_list for later searches (e.g., get_guest_env)
     char **o_env_list = env_list;
     // fprintf(stderr, "[DEBUG] %x\n", env_list);
+
+    // ========================================================================
+    // Fuzzer-Controlled Variables (Client-Controlled)
+    // ========================================================================
+    // These variables are parsed from the fuzzer's input.
+    // They typically represent HTTP headers (e.g., HTTP_USER_AGENT, HTTP_COOKIE).
+    // ========================================================================
     while (env_st < ed) {
 
         while (*env_end != '\n') env_end++;
@@ -267,9 +272,8 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
 
         env_st = env_end;
     }
-    gval_from_h(env_list) = 0;
 
-    /* Cache some env*/
+    /* Cache some env */
     char *p = get_guest_env("PATH_INFO", o_env_list);
     
     if (p != NULL) {
@@ -283,10 +287,18 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
     /* CGI fuzz: hack stdin, from `afl-cgi-wrapper`*/
     int fds[2];
     if (pipe(fds)) {
-        fprintf(stderr, "[ERROR] Fail to redirect stdin\n");
+        fprintf(stderr, "[ERROR] Fail to create pipe for stdin redirection\n");
         return;
     }
-    dup2(fds[0], STDIN_FILENO);
+
+    // Redirect the read-end of the pipe to STDIN (fd 0)
+    if (dup2(fds[0], STDIN_FILENO) == -1) {
+        perror("[ERROR] dup2 failed");
+        close(fds[0]);
+        close(fds[1]);
+        return;
+    }
+    // Close the original read-end fd, as it's now duplicated to 0
     close(fds[0]);
 
     char *content = get_guest_env("CONTENT", o_env_list);
@@ -303,10 +315,15 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
         env_strs += ENV_MAX_LEN;
         
         env_list = (char **)((uint64_t)env_list + sizeof(target_ulong));
-        gval_from_h(env_list) = 0;
         
     }
     close(fds[1]);
+
+    // ========================================================================
+    // [END] Finalize the Environment List
+    // ========================================================================
+    // Ensure the array is NULL-terminated, as required by the execve spec.
+    gval_from_h(env_list) = 0;
 }
 
 void set_guest_env_file(char *inputfile, char **env_list, char *env_strs) {

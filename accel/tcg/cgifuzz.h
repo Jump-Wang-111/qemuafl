@@ -93,7 +93,7 @@ extern int          feedback_stage;
 extern regex_env    *cgi_regex;
 extern int          use_cgi_regex;
 extern func_info    hook[FUNC_COUNT];
-extern char         path_info[ENV_MAX_LEN - ENV_NAME_MAX_LEN];;
+extern char         path_info[ENV_MAX_LEN - ENV_NAME_MAX_LEN];
 extern int          path_info_len;
 
 void parse_map_line(char *line, MapEntry *entry);
