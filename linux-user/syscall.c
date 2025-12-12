@@ -8268,6 +8268,93 @@ static int host_to_target_cpu_mask(const unsigned long *host_mask,
     return 0;
 }
 
+
+/* CGI FUZZ: add fs hijacker */
+
+/* --- [START] QEMU SYSCALL ARGS HIJACKER --- */
+
+// #define HIJACK_BUF_SIZE PATH_MAX 
+
+// // 使用线程局部变量保存 Guest 内存地址，确保多线程安全
+// // 初始化为 0，表示尚未分配
+// static __thread abi_ulong guest_hijack_buf_1 = 0; 
+// static __thread abi_ulong guest_hijack_buf_2 = 0;
+// static const char* rootfs_env = NULL;
+
+// /* * 辅助函数：确保 Guest 内存已分配 
+//  */
+// static void ensure_hijack_buffers(void) {
+//     if (guest_hijack_buf_1 == 0) {
+//         // 调用 target_mmap 分配内存 (PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON)
+//         // 注意：target_mmap 的参数可能随 QEMU 版本略有不同，这是常见签名
+//         guest_hijack_buf_1 = target_mmap(0, HIJACK_BUF_SIZE, 
+//                                          PROT_READ | PROT_WRITE, 
+//                                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        
+//         guest_hijack_buf_2 = target_mmap(0, HIJACK_BUF_SIZE, 
+//                                          PROT_READ | PROT_WRITE, 
+//                                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                                         
+//         // 如果分配失败 (返回 -1)，这里应该处理，但为演示简化
+//         if (!rootfs_env) {
+//              rootfs_env = getenv("QEMU_GUEST_ROOTFS");
+//              if (!rootfs_env) rootfs_env = "";
+             
+//              int l = strlen(rootfs_env);
+//              if (l > 0 && rootfs_env[l - 1] == '/')
+//                 rootfs_env[l - 1] == '\0';
+//         }
+//     }
+// }
+
+// /*
+//  * 核心劫持函数：
+//  * 1. 从 Guest 读取原路径
+//  * 2. 判断是否需要重写 (绝对路径?)
+//  * 3. 如果需要，写入分配好的 Guest 缓冲区
+//  * 4. 返回新的 Guest 地址 (或者是原地址)
+//  */
+// static abi_ulong hijack_path_arg(abi_ulong original_ptr, abi_ulong target_buf_ptr) {
+//     if (original_ptr == 0) return 0;
+//     if (!rootfs_env || rootfs_env[0] == '\0') return original_ptr;
+
+//     // 1. 读取 (Lock)
+//     char *path = lock_user_string(original_ptr);
+//     if (!path) return original_ptr; // 读取失败，保持原样让原逻辑报错
+
+//     // 2. 判断
+//     if (path[0] != '/') {
+//         unlock_user(path, original_ptr, 0);
+//         return original_ptr; // 相对路径，不处理
+//     }
+    
+//     // 排除特殊路径
+//     if (strncmp(path, "/dev", 4) == 0 || strncmp(path, "/proc", 5) == 0) {
+//         unlock_user(path, original_ptr, 0);
+//         return original_ptr;
+//     }
+
+//     // 3. 构造新路径 (Host 栈上)
+//     char temp_buf[PATH_MAX];
+//     int len = snprintf(temp_buf, PATH_MAX, "%s%s", rootfs_env, path);
+//     unlock_user(path, original_ptr, 0); // 释放读取锁
+
+//     if (len >= PATH_MAX || len < 0) return original_ptr; // 溢出保护
+
+//     // 4. 写入 Guest 缓冲区 (Copy-out)
+//     // lock_user 的最后一个参数非 0 表示我们需要写入权限
+//     void *guest_mem = lock_user(VERIFY_WRITE, target_buf_ptr, len + 1, 0);
+//     if (!guest_mem) return original_ptr; // 无法写入 Guest 内存
+
+//     memcpy(guest_mem, temp_buf, len + 1);
+//     unlock_user(guest_mem, target_buf_ptr, len + 1); // 提交写入
+
+//     // 5. 返回那个已经包含了新路径的 Guest 地址！
+//     return target_buf_ptr;
+// }
+
+/* --- [END] QEMU SYSCALL ARGS HIJACKER --- */
+
 /* This is an internal helper for do_syscall so that it is easier
  * to have a single return point, so that actions, such as logging
  * of syscall results, can be performed.
@@ -8290,6 +8377,226 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
     || defined(TARGET_NR_fstatfs)
     struct statfs stfs;
 #endif
+
+    /* --- [INSERT] 插入预处理 Switch --- */
+    
+//     ensure_hijack_buffers(); 
+
+//     switch (num) {
+
+//         // ==========================================================
+//         // 集合 1: arg1 是路径
+//         // ==========================================================
+// #if defined(TARGET_NR_access) || defined(TARGET_NR_chmod) || \
+//     defined(TARGET_NR_chown) || defined(TARGET_NR_lchown) || \
+//     defined(TARGET_NR_stat) || defined(TARGET_NR_lstat) || \
+//     defined(TARGET_NR_stat64) || defined(TARGET_NR_lstat64) || \
+//     defined(TARGET_NR_truncate) || defined(TARGET_NR_truncate64) || \
+//     defined(TARGET_NR_unlink) || defined(TARGET_NR_rmdir) || \
+//     defined(TARGET_NR_mkdir) || defined(TARGET_NR_chdir) || \
+//     defined(TARGET_NR_open) || defined(TARGET_NR_creat) || \
+//     defined(TARGET_NR_execve) || defined(TARGET_NR_readlink) || \
+//     defined(TARGET_NR_mknod) || defined(TARGET_NR_uselib) || \
+//     defined(TARGET_NR_swapon) || defined(TARGET_NR_acct) || \
+//     defined(TARGET_NR_utime) || defined(TARGET_NR_utimes) || \
+//     defined(TARGET_NR_chroot)
+
+// #ifdef TARGET_NR_access
+//         case TARGET_NR_access:
+// #endif
+// #ifdef TARGET_NR_chmod
+//         case TARGET_NR_chmod:
+// #endif
+// #ifdef TARGET_NR_chown
+//         case TARGET_NR_chown:
+// #endif
+// #ifdef TARGET_NR_lchown
+//         case TARGET_NR_lchown:
+// #endif
+// #ifdef TARGET_NR_stat
+//         case TARGET_NR_stat:
+// #endif
+// #ifdef TARGET_NR_lstat
+//         case TARGET_NR_lstat:
+// #endif
+// #ifdef TARGET_NR_stat64
+//         case TARGET_NR_stat64:
+// #endif
+// #ifdef TARGET_NR_lstat64
+//         case TARGET_NR_lstat64:
+// #endif
+// #ifdef TARGET_NR_truncate
+//         case TARGET_NR_truncate:
+// #endif
+// #ifdef TARGET_NR_truncate64
+//         case TARGET_NR_truncate64:
+// #endif
+// #ifdef TARGET_NR_unlink
+//         case TARGET_NR_unlink:
+// #endif
+// #ifdef TARGET_NR_rmdir
+//         case TARGET_NR_rmdir:
+// #endif
+// #ifdef TARGET_NR_mkdir
+//         case TARGET_NR_mkdir:
+// #endif
+// #ifdef TARGET_NR_chdir
+//         case TARGET_NR_chdir:
+// #endif
+// #ifdef TARGET_NR_open
+//         case TARGET_NR_open: 
+// #endif
+// #ifdef TARGET_NR_creat
+//         case TARGET_NR_creat:
+// #endif
+// #ifdef TARGET_NR_execve
+//         case TARGET_NR_execve:
+// #endif
+// #ifdef TARGET_NR_readlink
+//         case TARGET_NR_readlink:
+// #endif
+// #ifdef TARGET_NR_mknod
+//         case TARGET_NR_mknod:
+// #endif
+// #ifdef TARGET_NR_uselib
+//         case TARGET_NR_uselib:
+// #endif
+// #ifdef TARGET_NR_swapon
+//         case TARGET_NR_swapon:
+// #endif
+// #ifdef TARGET_NR_acct
+//         case TARGET_NR_acct:
+// #endif
+// #ifdef TARGET_NR_utime
+//         case TARGET_NR_utime:
+// #endif
+// #ifdef TARGET_NR_utimes
+//         case TARGET_NR_utimes:
+// #endif
+// #ifdef TARGET_NR_chroot
+//         case TARGET_NR_chroot:
+// #endif
+//             arg1 = hijack_path_arg(arg1, guest_hijack_buf_1);
+//             break;
+// #endif // 结束集合 1 总开关
+
+
+//         // ==========================================================
+//         // 集合 2: arg2 是路径
+//         // ==========================================================
+// #if defined(TARGET_NR_openat) || defined(TARGET_NR_faccessat) || \
+//     defined(TARGET_NR_fchmodat) || defined(TARGET_NR_fchownat) || \
+//     defined(TARGET_NR_fstatat64) || defined(TARGET_NR_newfstatat) || \
+//     defined(TARGET_NR_mkdirat) || defined(TARGET_NR_mknodat) || \
+//     defined(TARGET_NR_unlinkat) || defined(TARGET_NR_utimensat) || \
+//     defined(TARGET_NR_readlinkat) || defined(TARGET_NR_execveat) || \
+//     defined(TARGET_NR_statx)
+
+// #ifdef TARGET_NR_openat
+//         case TARGET_NR_openat:
+// #endif
+// #ifdef TARGET_NR_faccessat
+//         case TARGET_NR_faccessat:
+// #endif
+// #ifdef TARGET_NR_fchmodat
+//         case TARGET_NR_fchmodat:
+// #endif
+// #ifdef TARGET_NR_fchownat
+//         case TARGET_NR_fchownat:
+// #endif
+// #ifdef TARGET_NR_fstatat64
+//         case TARGET_NR_fstatat64:
+// #endif
+// #ifdef TARGET_NR_newfstatat
+//         case TARGET_NR_newfstatat:
+// #endif
+// #ifdef TARGET_NR_mkdirat
+//         case TARGET_NR_mkdirat:
+// #endif
+// #ifdef TARGET_NR_mknodat
+//         case TARGET_NR_mknodat:
+// #endif
+// #ifdef TARGET_NR_unlinkat
+//         case TARGET_NR_unlinkat:
+// #endif
+// #ifdef TARGET_NR_utimensat
+//         case TARGET_NR_utimensat:
+// #endif
+// #ifdef TARGET_NR_readlinkat
+//         case TARGET_NR_readlinkat:
+// #endif
+// #ifdef TARGET_NR_execveat
+//         case TARGET_NR_execveat:
+// #endif
+// #ifdef TARGET_NR_statx
+//         case TARGET_NR_statx:
+// #endif
+//             arg2 = hijack_path_arg(arg2, guest_hijack_buf_1);
+//             break;
+// #endif // 结束集合 2 总开关
+
+
+//         // ==========================================================
+//         // 集合 3: arg1 和 arg2 都是路径
+//         // ==========================================================
+// #if defined(TARGET_NR_rename) || defined(TARGET_NR_link) || \
+//     defined(TARGET_NR_symlink) || defined(TARGET_NR_pivot_root) || \
+//     defined(TARGET_NR_mount)
+
+// #ifdef TARGET_NR_rename
+//         case TARGET_NR_rename:
+// #endif
+// #ifdef TARGET_NR_link
+//         case TARGET_NR_link:
+// #endif
+// #ifdef TARGET_NR_symlink
+//         case TARGET_NR_symlink:
+// #endif
+// #ifdef TARGET_NR_pivot_root
+//         case TARGET_NR_pivot_root:
+// #endif
+// #ifdef TARGET_NR_mount
+//         case TARGET_NR_mount:
+// #endif
+//             arg1 = hijack_path_arg(arg1, guest_hijack_buf_1);
+//             arg2 = hijack_path_arg(arg2, guest_hijack_buf_2);
+//             break;
+// #endif // 结束集合 3 总开关
+
+
+//         // ==========================================================
+//         // 集合 4: arg2 和 arg4 是路径
+//         // ==========================================================
+// #if defined(TARGET_NR_renameat) || defined(TARGET_NR_renameat2) || \
+//     defined(TARGET_NR_linkat)
+
+// #ifdef TARGET_NR_renameat
+//         case TARGET_NR_renameat:
+// #endif
+// #ifdef TARGET_NR_renameat2
+//         case TARGET_NR_renameat2:
+// #endif
+// #ifdef TARGET_NR_linkat
+//         case TARGET_NR_linkat:
+// #endif
+//              arg2 = hijack_path_arg(arg2, guest_hijack_buf_1);
+//              arg4 = hijack_path_arg(arg4, guest_hijack_buf_2);
+//              break;
+// #endif // 结束集合 4 总开关
+
+
+//         // ==========================================================
+//         // 集合 5: arg1 和 arg3 是路径 (symlinkat)
+//         // ==========================================================
+// #ifdef TARGET_NR_symlinkat
+//         case TARGET_NR_symlinkat:
+//              arg1 = hijack_path_arg(arg1, guest_hijack_buf_1);
+//              arg3 = hijack_path_arg(arg3, guest_hijack_buf_2);
+//              break;
+// #endif
+//     }
+    /* --- [END INSERT] --- */
+
     void *p;
 
     switch(num) {
