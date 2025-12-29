@@ -2124,6 +2124,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     /* CGI fuzz: hook ret */
     TCGv tcg_pc = tcg_const_tl(pc);
     gen_helper_cgi_hook_func_ret(cpu_env, tcg_pc);
+    tcg_temp_free(tcg_pc);
 
     gen_intermediate_code(cpu, tb, max_insns);
     tcg_ctx->cpu = NULL;
