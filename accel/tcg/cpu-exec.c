@@ -1033,7 +1033,7 @@ void cgi_get_regexec_arg(CPUArchState *env) {
     
     if (strcmp((char *)g2h_untagged(arg2), NEW_ENV_FLAG)) return;
     
-    char *p = cgi_feedback->buf + ENV_MAX_LEN * cgi_feedback->target;
+    char *p = cgi_feedback->buf + FD_ENTRY_LEN * cgi_feedback->target;
     set_feedback_env(p, "regexec", path);
 
     cgi_feedback->pair++;
@@ -1084,7 +1084,7 @@ void cgi_get_strcmp_arg(CPUArchState *env) {
     return;
   }
 
-  char *p = cgi_feedback->buf + ENV_MAX_LEN * cgi_feedback->target;
+  char *p = cgi_feedback->buf + FD_ENTRY_LEN * cgi_feedback->target;
   set_feedback_env(p, "strcmp", str);
 
   cgi_feedback->pair++;
@@ -1113,7 +1113,7 @@ void cgi_get_strncmp_arg(CPUArchState *env) {
     return;
   }
 
-  char *p = cgi_feedback->buf + ENV_MAX_LEN * cgi_feedback->target;
+  char *p = cgi_feedback->buf + FD_ENTRY_LEN * cgi_feedback->target;
   set_feedback_env(p, "strncmp", str);
 
   cgi_feedback->pair++;
@@ -1142,7 +1142,7 @@ void cgi_get_strcasecmp_arg(CPUArchState *env) {
     return;
   }
 
-  char *p = cgi_feedback->buf + ENV_MAX_LEN * cgi_feedback->target;
+  char *p = cgi_feedback->buf + FD_ENTRY_LEN * cgi_feedback->target;
   set_feedback_env(p, "strcasecmp", str);
 
   cgi_feedback->pair++;
@@ -1171,7 +1171,7 @@ void cgi_get_strncasecmp_arg(CPUArchState *env) {
     return;
   }
 
-  char *p = cgi_feedback->buf + ENV_MAX_LEN * cgi_feedback->target;
+  char *p = cgi_feedback->buf + FD_ENTRY_LEN * cgi_feedback->target;
   set_feedback_env(p, "strncasecmp", str);
 
   cgi_feedback->pair++;
@@ -1191,7 +1191,7 @@ void cgi_get_strstr_arg(CPUArchState *env) {
 
   if (strcmp(str1, NEW_ENV_FLAG)) return;
 
-  char *p = cgi_feedback->buf + ENV_MAX_LEN * cgi_feedback->target;
+  char *p = cgi_feedback->buf + FD_ENTRY_LEN * cgi_feedback->target;
   set_feedback_env(p, "strstr", str2);
 
   cgi_feedback->pair++;
@@ -1211,7 +1211,7 @@ void cgi_get_strtok_arg(CPUArchState *env) {
 
   if (strcmp(str1, NEW_ENV_FLAG)) return;
 
-  char *p = cgi_feedback->buf + ENV_MAX_LEN * cgi_feedback->target;
+  char *p = cgi_feedback->buf + FD_ENTRY_LEN * cgi_feedback->target;
   set_feedback_env(p, "strtok", str2);
 
   cgi_feedback->pair++;
@@ -1246,11 +1246,11 @@ void cgi_get_call_ret(CPUArchState *env, target_ulong pc) {
     
     /* update shared mem, tell afl to add new env */
     for (int i = 0; i < cgi_feedback->num; i++) {
-      char *p = cgi_feedback->buf + i * ENV_MAX_LEN;
+      char *p = cgi_feedback->buf + i * FD_ENTRY_LEN;
       if (!strcmp(p, env_name)) return; 
     }
     
-    strcpy(cgi_feedback->buf + cgi_feedback->num * ENV_MAX_LEN, env_name);
+    strcpy(cgi_feedback->buf + cgi_feedback->num * FD_ENTRY_LEN, env_name);
     cgi_feedback->num++;
     if (getenv("HOOK_DEBUG")) {
       fprintf(stderr, "[HOOK] Successful add %s to shm\n", env_name);

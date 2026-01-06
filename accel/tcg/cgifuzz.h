@@ -27,6 +27,7 @@
 #define SHM_CGI_FD_ENV_VAR  "__AFL_SHM_CGI_FD_ID"
 #define SHM_CGI_RE_ENV_VAR  "__AFL_SHM_CGI_RE_ID"
 #define ENV_MAX_LEN         4096
+#define FD_ENTRY_LEN        4096 * 4
 #define ENV_MAX_ENTRY       256
 #define ENV_NAME_MAX_LEN    128
 #define NEW_ENV_FLAG        "NEW_ENV"
