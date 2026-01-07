@@ -97,6 +97,12 @@ extern func_info    hook[FUNC_COUNT];
 extern char         path_info[ENV_MAX_LEN - ENV_NAME_MAX_LEN];
 extern int          path_info_len;
 
+extern bool         cgi_persistent;
+extern bool         cgi_debug_env;
+extern bool         cgi_test_crash;
+extern bool         cgi_debug;
+extern bool         hook_debug;
+
 void parse_map_line(char *line, MapEntry *entry);
 
 MapEntry** loadmaps(void);

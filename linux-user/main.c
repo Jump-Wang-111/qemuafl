@@ -65,7 +65,13 @@ uintptr_t guest_base;
 bool have_guest_base;
 
 /* CGI fuzz */
-extern char * afl_inputfile;
+extern char *afl_inputfile;
+extern bool cgi_persistent;
+extern bool cgi_debug_env;
+extern bool cgi_test_crash;
+extern bool cgi_debug;
+extern bool hook_debug;
+
 /*
  * Used to implement backwards-compatibility for the `-strace`, and
  * QEMU_STRACE options. Without this, the QEMU_LOG can be overwritten by
@@ -939,6 +945,12 @@ int main(int argc, char **argv, char **envp)
         fprintf(stderr, "[DEBUG] Input file:%s\n", afl_inputfile);
         fprintf(stderr, "[DEBUG] Pid:%d\n", ts->ts_tid);
     }
+
+    if (getenv("CGI_PERSISTENT")) cgi_persistent = true;
+    if (getenv("CGI_DEBUG_ENV")) cgi_debug_env = true;
+    if (getenv("CGI_TEST_CRASH")) cgi_test_crash = true;
+    if (getenv("CGI_DEBUG")) cgi_debug = true;
+    if (getenv("HOOK_DEBUG")) hook_debug = true;
         
 
     ret = loader_exec(execfd, exec_path, target_argv, target_environ, regs,

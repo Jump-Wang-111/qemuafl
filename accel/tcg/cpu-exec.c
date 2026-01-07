@@ -57,6 +57,20 @@
   #include <dlfcn.h>
 #endif
 
+
+/** CGI fuzz
+ * afl_inputfile filled in qemu main.c
+*/
+char *afl_inputfile;
+char **env_list;
+char *env_strs;
+
+extern bool cgi_persistent;
+extern bool cgi_debug_env;
+extern bool cgi_test_crash;
+extern bool cgi_debug;
+extern bool hook_debug;
+
 /***************************
  * VARIOUS AUXILIARY STUFF *
  ***************************/
@@ -306,7 +320,7 @@ static void cgi_shm_feedback(void) {
     cgi_feedback = (cgi_fd *)map;
     use_cgi_feedback = 1;
 
-    if (getenv("CGI_DEBUG")) {
+    if (cgi_debug) {
 
       fprintf(stderr, "[DEBUG] Successfully got cgi feedback shared memory\n");
 
@@ -342,7 +356,7 @@ static void cgi_shm_regex(void) {
     cgi_regex = (regex_env *)map;
     use_cgi_regex = 1;
 
-    if (getenv("CGI_DEBUG")) {
+    if (cgi_debug) {
 
       fprintf(stderr, "[DEBUG] Successfully got cgi regex shared memory\n");
 
@@ -654,7 +668,7 @@ void afl_setup(void) {
   }
   
   /* CGI FUZZ */
-  if (getenv("CGI_PERSISTENT")) {
+  if (cgi_persistent) {
     sharedmem_fuzzing = 1;
     afl_persistent_hook_ptr = cheat_persistent_ptr;
   }
@@ -718,13 +732,6 @@ void afl_setup(void) {
 }
 
 
-/** CGI fuzz
- * afl_inputfile filled in qemu main.c
-*/
-char *afl_inputfile;
-char **env_list;
-char *env_strs;
-
 /* Fork server logic, invoked once we hit _start. */
 
 void afl_forkserver(CPUState *cpu) {
@@ -737,7 +744,7 @@ void afl_forkserver(CPUState *cpu) {
   uint64_t g2h_environ_addr = g2h_untagged(g_environ_addr);
   target_ulong g_environ = gval_from_h(g2h_environ_addr);
 
-  if (getenv("CGI_DEBUG")) {
+  if (cgi_debug) {
     fprintf(stderr, "[DEBUG] Getenv func addr: 0x%08x\n", g_environ);
   }
     
@@ -762,7 +769,7 @@ void afl_forkserver(CPUState *cpu) {
   g_environ = *(target_ulong*)g2h_environ_addr = new_env_list;
   env_list = (char **)g2h_untagged(g_environ + i);
   env_strs = (char *)g2h_untagged(new_env_strs);
-  if (getenv("CGI_DEBUG")) {
+  if (cgi_debug) {
     fprintf(stderr, "[DEBUG] Set new env list: %lx\n", new_env_list);
     fprintf(stderr, "[DEBUG] Set new env strs: %lx\n", new_env_strs);
   }
@@ -797,7 +804,7 @@ void afl_forkserver(CPUState *cpu) {
     // Map host string address to guest address space and store in env_list
     gval_from_h(env_list) = h2g(env_strs);
     
-    if (getenv("CGI_DEBUG_ENV")) {
+    if (cgi_debug_env) {
         fprintf(stderr, "[DEBUG] Add Fixed env: %s\n", env_strs);
     }
 
@@ -808,9 +815,9 @@ void afl_forkserver(CPUState *cpu) {
     i++;
   }
 
-  if (getenv("CGI_TEST_CRASH")) {
+  if (cgi_test_crash) {
     set_guest_env_file(afl_inputfile, env_list, env_strs);
-    if (getenv("CGI_DEBUG_ENV")) debug_env(g_environ);
+    if (cgi_debug_env) debug_env(g_environ);
   }
 
 
@@ -923,9 +930,9 @@ void afl_forkserver(CPUState *cpu) {
         close(FORKSRV_FD + 1);
         close(t_fd[0]);
 
-        if (!getenv("CGI_PERSISTENT")) {
+        if (!cgi_persistent) {
           set_guest_env_file(afl_inputfile, env_list, env_strs);
-          if (getenv("CGI_DEBUG_ENV")) debug_env(g_environ);
+          if (cgi_debug_env) debug_env(g_environ);
         }
         
         return;
@@ -1009,7 +1016,7 @@ void cgi_get_regcomp_arg(CPUArchState *env) {
   
   cgi_regex->all_regex_map[key] = 1;
   strcpy(cgi_regex->all_regex_val[key], g2h_untagged(arg2));
-  if (getenv("HOOK_DEBUG"))
+  if (hook_debug)
     fprintf(stderr, "[HOOK] Add regex map(%x)=%s, addr: %x\n", key, g2h_untagged(arg2), arg1);
 }
 
@@ -1053,7 +1060,7 @@ void cgi_get_regexec_arg(CPUArchState *env) {
   strcpy(cgi_regex->path_info_r[cgi_regex->num_of_regex], path);
   cgi_regex->num_of_regex++;
   
-  if (getenv("HOOK_DEBUG")) {
+  if (hook_debug) {
     fprintf(stderr, "[HOOK] Add regex map(0x%x)=%s, regex_t addr: 0x%x \n", key, path, arg1);
     // fprintf(stderr, "[HOOK] Add regex map(%x)=%s\n", key, cgi_regex->path_info_str[cgi_regex->num_of_regex - 1]);
     // fprintf(stderr, "[HOOK] Next addr: 0x%08x\n", cgi_regex->path_info_str[cgi_regex->num_of_regex]);
@@ -1235,13 +1242,13 @@ void cgi_get_call_ret(CPUArchState *env, target_ulong pc) {
 
     if (ret != 0) {
       
-      if (getenv("HOOK_DEBUG"))
+      if (hook_debug)
         fprintf(stderr, "[HOOK] getenv(%s)=%s\n", env_name, g2h_untagged(ret));
       
       return;
     }
     
-    if (getenv("HOOK_DEBUG"))
+    if (hook_debug)
       fprintf(stderr, "[HOOK] getenv(%s)=NULL\n", env_name);
     
     /* update shared mem, tell afl to add new env */
@@ -1252,7 +1259,7 @@ void cgi_get_call_ret(CPUArchState *env, target_ulong pc) {
     
     strcpy(cgi_feedback->buf + cgi_feedback->num * FD_ENTRY_LEN, env_name);
     cgi_feedback->num++;
-    if (getenv("HOOK_DEBUG")) {
+    if (hook_debug) {
       fprintf(stderr, "[HOOK] Successful add %s to shm\n", env_name);
       fprintf(stderr, "[HOOK] cur num %d\n", cgi_feedback->num);
     }
@@ -1305,9 +1312,9 @@ void afl_persistent_iter(CPUArchState *env) {
       afl_persistent_hook_ptr(&hook_regs, guest_base, shared_buf,
                               *shared_buf_len);
       /* CGI FUZZ */
-      if (getenv("CGI_PERSISTENT")) {
+      if (cgi_persistent) {
         set_guest_env_persistent(shared_buf, *shared_buf_len, env_list, env_strs);
-        if (getenv("CGI_DEBUG_ENV")) debug_env(h2g(env_list));
+        if (cgi_debug_env) debug_env(h2g(env_list));
       }
       afl_restore_regs(&hook_regs, env);
 
@@ -1356,9 +1363,9 @@ void afl_persistent_loop(CPUArchState *env) {
         afl_persistent_hook_ptr(&hook_regs, guest_base, shared_buf,
                                 *shared_buf_len);
         /* CGI FUZZ */
-        if (getenv("CGI_PERSISTENT")) {
+        if (cgi_persistent) {
           set_guest_env_persistent(shared_buf, *shared_buf_len, env_list, env_strs);
-          if (getenv("CGI_DEBUG_ENV")) debug_env(h2g(env_list));
+          if (cgi_debug_env) debug_env(h2g(env_list));
         }
         
         afl_restore_regs(&hook_regs, env);

@@ -19,6 +19,12 @@ func_info   hook[FUNC_COUNT] = {
     [STRTOK]        = {"strtok", 0, 0, 0, 0, 0, 0}
 };
 
+bool cgi_persistent = false;
+bool cgi_debug_env = false;
+bool cgi_test_crash = false;
+bool cgi_debug = false;
+bool hook_debug = false;
+
 void parse_map_line(char *line, MapEntry *entry) {
     int fields = sscanf(line, "%31s %7s %lx %7s %lu %255s[^\n]",
                         entry->address,
@@ -156,7 +162,7 @@ Elf32_Addr get_sym_off(char *libc_path, char *sym_name) {
         for (int j = 0; j < sym_count; j++) {
             Elf32_Sym *sym = (Elf32_Sym *)(symtab + j * shdrs[i].sh_entsize);
             if (strcmp(&strtab[sym->st_name], sym_name) == 0) {
-                if (getenv("CGI_DEBUG"))
+                if (cgi_debug)
                     fprintf(stderr, "Found symbol '%s' at address 0x%x\n", sym_name, sym->st_value);
                 free(symtab);
                 free(strtab);
@@ -196,7 +202,7 @@ void get_libc_sym_addr() {
     char* libc_path;
 
     get_libc_info(maplist, &start, &libc_path);
-    if (getenv("CGI_DEBUG")) {
+    if (cgi_debug) {
         fprintf(stderr, "[DEBUG] libc_start: %lx\n", start);
         fprintf(stderr, "[DEBUG] libc_path: %s\n", libc_path);
     }
@@ -217,7 +223,7 @@ void get_libc_sym_addr() {
         else
             hook[i].addr = h2g(start) + offset;
         
-        if (getenv("CGI_DEBUG")) {
+        if (cgi_debug) {
             fprintf(stderr, "[DEBUG] g_%s_addr: %08x\n", hook[i].name, hook[i].addr);
         }
     }
@@ -265,7 +271,7 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
 
         strncpy(env_strs, env_st, ENV_MAX_LEN - ENV_NAME_MAX_LEN);
         gval_from_h(env_list) = h2g(env_strs);
-        if (getenv("CGI_DEBUG_ENV")) fprintf(stderr, "[DEBUG] Add env: %s\n", env_st);
+        if (cgi_debug_env) fprintf(stderr, "[DEBUG] Add env: %s\n", env_st);
 
         env_strs += ENV_MAX_LEN;
         env_list = (char **)((uint64_t)env_list + sizeof(target_ulong));
@@ -309,7 +315,7 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
         
         /* set env for CONTENT_LENGTH */
         snprintf(env_strs, ENV_MAX_LEN, "CONTENT_LENGTH=%d", content_length);
-        if (getenv("CGI_DEBUG_ENV")) fprintf(stderr, "%s\n", env_strs);
+        if (cgi_debug_env) fprintf(stderr, "%s\n", env_strs);
         
         gval_from_h(env_list) = h2g(env_strs);
         env_strs += ENV_MAX_LEN;
@@ -379,7 +385,7 @@ void set_feedback_env(char *env, char *func, char *fb) {
     char *p = strchr(start, ' ');
     *p = '\0';
 
-    if (getenv("HOOK_DEBUG")) {
+    if (hook_debug) {
         fprintf(stderr, "[FB] Set feedback env: %s-%s\n", start, p + 1);
     }
 
