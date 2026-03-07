@@ -258,6 +258,9 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
     char **o_env_list = env_list;
     // fprintf(stderr, "[DEBUG] %x\n", env_list);
 
+    char *binary_content_ptr = NULL;
+    int binary_content_len = 0;
+
     // ========================================================================
     // Fuzzer-Controlled Variables (Client-Controlled)
     // ========================================================================
@@ -266,6 +269,13 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
     // ========================================================================
     while (env_st < ed) {
 
+        // if CONTENT=, else is binary
+        if (strncmp(env_st, "CONTENT=", 8) == 0) {
+            binary_content_ptr = env_st + 8;
+            binary_content_len = ed - binary_content_ptr;
+            break; 
+        }
+        
         while (*env_end != '\n') env_end++;
         *env_end++ = '\0';
 
@@ -307,21 +317,11 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
     // Close the original read-end fd, as it's now duplicated to 0
     close(fds[0]);
 
-    char *content = get_guest_env("CONTENT", o_env_list);
-    if (content) {
-        int content_length = write(fds[1], content, strlen(content));
-        if (content_length == -1) 
+    if (binary_content_ptr && binary_content_len > 0) {
+        if (cgi_debug_env) fprintf(stderr, "[DEBUG] Redirect stdin: %s\n", binary_content_ptr);
+        if (write(fds[1], binary_content_ptr, binary_content_len) == -1) {
             fprintf(stderr, "[ERROR] Fail to write to pipe\n");
-        
-        /* set env for CONTENT_LENGTH */
-        snprintf(env_strs, ENV_MAX_LEN, "CONTENT_LENGTH=%d", content_length);
-        if (cgi_debug_env) fprintf(stderr, "%s\n", env_strs);
-        
-        gval_from_h(env_list) = h2g(env_strs);
-        env_strs += ENV_MAX_LEN;
-        
-        env_list = (char **)((uint64_t)env_list + sizeof(target_ulong));
-        
+        }
     }
     close(fds[1]);
 
