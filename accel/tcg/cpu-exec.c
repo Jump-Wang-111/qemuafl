@@ -739,13 +739,33 @@ void afl_forkserver(CPUState *cpu) {
   /* CGI fuzz */
 
   /* hook env for cgi fuzz */
-  get_libc_sym_addr();
+  resolve_hook_addrs();
   target_ulong g_environ_addr = hook[ENVIRON].addr;
   uint64_t g2h_environ_addr = g2h_untagged(g_environ_addr);
   target_ulong g_environ = gval_from_h(g2h_environ_addr);
 
   if (cgi_debug) {
     fprintf(stderr, "[DEBUG] Getenv func addr: 0x%08x\n", g_environ);
+  }
+
+  target_ulong new_fake_heap = target_mmap(0,
+                                         CGI_FAKE_HEAP_SIZE,
+                                         PROT_READ | PROT_WRITE,
+                                         MAP_ANONYMOUS | MAP_PRIVATE,
+                                         -1, 0);
+
+  /* 按你 tree 里的 target_mmap 返回值约定检查错误 */
+  if ((abi_long)new_fake_heap < 0) {
+    fprintf(stderr, "[ERROR] Fail to mmap fake heap: %lx\n", (long)new_fake_heap);
+    exit(1);
+  }
+
+  cgi_fake_heap_set_range(new_fake_heap, CGI_FAKE_HEAP_SIZE);
+
+  if (cgi_debug) {
+    fprintf(stderr, "[DEBUG] Set fake heap: %lx - %lx\n",
+            (unsigned long)new_fake_heap,
+            (unsigned long)(new_fake_heap + CGI_FAKE_HEAP_SIZE));
   }
     
   target_ulong i;
@@ -1225,8 +1245,226 @@ void cgi_get_strtok_arg(CPUArchState *env) {
 
 }
 
+static inline void cgi_force_ret(CPUArchState *env, target_ulong retval) {
+  target_ulong lr = env->regs[14];
+
+  env->regs[0] = retval;
+  env->regs[15] = lr & ~1;
+  env->thumb = lr & 1;
+
+  cpu_loop_exit_noexc(env_cpu(env));
+}
+
+void cgi_get_qcgisess_oem_init_arg(CPUArchState *env) {
+    /*
+     * ARM32:
+     * r0 = request
+     * r1 = a2
+     * lr = ret
+     */
+    hook[QCGISESS_OEM_INIT].arg1 = env->regs[0];
+    hook[QCGISESS_OEM_INIT].arg2 = env->regs[1];
+    hook[QCGISESS_OEM_INIT].ret_addr = env->regs[14];
+
+    /* 强制 a2=1 */
+    env->regs[1] = 1;
+
+    if (hook_debug) {
+        fprintf(stderr, "[HOOK] qcgisess_oem_init(request=%x, a2=%x->1)\n",
+                (unsigned)hook[QCGISESS_OEM_INIT].arg1,
+                (unsigned)hook[QCGISESS_OEM_INIT].arg2);
+    }
+}
+
+void cgi_get_qentry_arg(CPUArchState *env) {
+    hook[QENTRY].ret_addr = env->regs[14];
+
+    if (hook_debug) {
+        fprintf(stderr, "[HOOK] qEntry enter, lr=%x\n",
+                (unsigned)hook[QENTRY].ret_addr);
+    }
+}
+
+void cgi_get_qentry_ret(CPUArchState *env, target_ulong pc) {
+    if (hook[QENTRY].ret_addr == 0 || pc != hook[QENTRY].ret_addr) {
+        return;
+    }
+
+    target_ulong ent = env->regs[0];
+    if (!ent) {
+        return;
+    }
+
+    hook[QENTRY_GETSTR].addr = gval_from_g(ent + QENTRY_GETSTR_OFF);
+    hook[QENTRY_GETINT].addr = gval_from_g(ent + QENTRY_GETINT_OFF);
+    hook[QENTRY_GETSTR].enabled = (hook[QENTRY_GETSTR].addr != 0);
+    hook[QENTRY_GETINT].enabled = (hook[QENTRY_GETINT].addr != 0);
+
+    if (hook_debug) {
+        fprintf(stderr, "[HOOK] qEntry ret: ent=%x, getstr=%x, getint=%x\n",
+                (unsigned)ent,
+                (unsigned)hook[QENTRY_GETSTR].addr,
+                (unsigned)hook[QENTRY_GETINT].addr);
+    }
+
+    hook[QENTRY].ret_addr = 0;
+}
+
+void cgi_get_qentry_getint_arg(CPUArchState *env, char **env_list) {
+  /*
+    * r0 = this
+    * r1 = key
+    */
+  target_ulong self = hook[QENTRY_GETINT].arg1 = env->regs[0];
+  target_ulong keyp = hook[QENTRY_GETINT].arg2 = env->regs[1];
+  hook[QENTRY_GETINT].ret_addr = env->regs[14];
+  const char *key = (const char *)g2h_untagged(keyp);
+
+  int role = get_role_by_env(env_list);
+
+  if (!key || !role) return;
+
+  if (!strcmp(key, "authorized")) {
+      if (hook_debug) {
+          fprintf(stderr, "[HOOK] getint(self=%x, %s) => 1\n",
+                  (unsigned)self, key);
+      }
+      cgi_force_ret(env, 1);
+      return;
+  }
+
+  if (!strcmp(key, "passwordStatus")) {
+      if (hook_debug) {
+          fprintf(stderr, "[HOOK] getint(self=%x, %s) => 0\n",
+                  (unsigned)self, key);
+      }
+      cgi_force_ret(env, 0);
+      return;
+  }
+
+  if (!strcmp(key, "role")) {
+      if (hook_debug) {
+          fprintf(stderr, "[HOOK] getint(self=%x, %s) => %d\n",
+                  (unsigned)self, key, role);
+      }
+      cgi_force_ret(env, role);
+      return;
+  }
+}
+
+void cgi_get_qentry_getstr_arg(CPUArchState *env, char **env_list) {
+    /*
+     * r0 = this
+     * r1 = key
+     * r2 = newmem
+     */
+    target_ulong self   = hook[QENTRY_GETSTR].arg1 = env->regs[0];
+    target_ulong keyp   = hook[QENTRY_GETSTR].arg2 = env->regs[1];
+    target_ulong newmem = hook[QENTRY_GETSTR].arg3 = env->regs[2];
+    hook[QENTRY_GETSTR].ret_addr = env->regs[14];
+    const char *key = (const char *)g2h_untagged(keyp);
+
+    if (!key) return;
+
+    if (!strcmp(key, "CSRFTOKEN")) {
+        char *p = get_guest_env("HTTP_X_CSRFTOKEN", env_list);
+        if (!p || !*p) {
+            if (hook_debug) {
+                fprintf(stderr, "[HOOK] getstr(self=%x, %s) => env missing\n",
+                        (unsigned)self, key);
+            }
+            return;
+        }
+
+        if (newmem == 0) {
+            if (hook_debug) {
+                fprintf(stderr, "[HOOK] getstr(self=%x, %s, 0) => %x: %s\n",
+                        (unsigned)self, key, (unsigned)h2g(p), p);
+            }
+            cgi_force_ret(env, h2g(p));
+            return;
+        }
+
+        target_ulong dup = cgi_fake_heap_strdup(p);
+        if (!dup) {
+            if (hook_debug) {
+                fprintf(stderr, "[HOOK] getstr(self=%x, %s, 1) => fake heap alloc failed\n",
+                        (unsigned)self, key);
+            }
+            return;
+        }
+
+        if (hook_debug) {
+            fprintf(stderr, "[HOOK] getstr(self=%x, %s, 1) => fake %x: %s\n",
+                    (unsigned)self, key, (unsigned)dup, g2h_untagged(dup));
+        }
+        cgi_force_ret(env, dup);
+        return;
+    }
+}
+
+void cgi_get_free_arg(CPUArchState *env) {
+  target_ulong ptr = hook[FREE].arg1 = env->regs[0];
+
+  if (cgi_fake_heap_contains(ptr)) {
+      if (hook_debug) {
+          fprintf(stderr, "[HOOK] free(%x) swallowed by fake heap\n",
+                  (unsigned)ptr);
+      }
+      cgi_force_ret(env, 0);
+      return;
+  }
+}
+
 void cgi_get_call_ret(CPUArchState *env, target_ulong pc) {
   
+  cgi_get_qentry_ret(env, pc);
+
+  if (pc == hook[QENTRY_GETINT].ret_addr) {
+    target_ulong ret = env->regs[0];
+    const char *key = NULL;
+
+    if (hook[QENTRY_GETINT].arg2) {
+      key = (const char *)g2h_untagged(hook[QENTRY_GETINT].arg2);
+    }
+
+    if (hook_debug) {
+      fprintf(stderr, "[HOOK] getint ret(self=%x, %s) => %d\n",
+              (unsigned)hook[QENTRY_GETINT].arg1,
+              key ? key : "<null>",
+              (int)ret);
+    }
+
+    hook[QENTRY_GETINT].ret_addr = 0;
+  }
+
+  if (pc == hook[QENTRY_GETSTR].ret_addr) {
+    target_ulong ret = env->regs[0];
+    const char *key = NULL;
+
+    if (hook[QENTRY_GETSTR].arg2) {
+      key = (const char *)g2h_untagged(hook[QENTRY_GETSTR].arg2);
+    }
+
+    if (hook_debug) {
+      if (ret) {
+        fprintf(stderr, "[HOOK] getstr ret(self=%x, %s, %u) => %x: %s\n",
+                (unsigned)hook[QENTRY_GETSTR].arg1,
+                key ? key : "<null>",
+                (unsigned)hook[QENTRY_GETSTR].arg3,
+                (unsigned)ret,
+                (char *)g2h_untagged(ret));
+      } else {
+        fprintf(stderr, "[HOOK] getstr ret(self=%x, %s, %u) => NULL\n",
+                (unsigned)hook[QENTRY_GETSTR].arg1,
+                key ? key : "<null>",
+                (unsigned)hook[QENTRY_GETSTR].arg3);
+      }
+    }
+
+    hook[QENTRY_GETSTR].ret_addr = 0;
+  }
+
   if (pc == hook[GETENV].ret_addr) {
     
     /* Init fail */

@@ -75,6 +75,27 @@ void HELPER(cgi_hook_func_ret)(CPUArchState *env, target_ulong pc) {
   cgi_get_call_ret(env, pc);
 }
 
+void HELPER(cgi_hook_qcgisess_oem_init_arg)(CPUArchState *env) {
+  cgi_get_qcgisess_oem_init_arg(env);
+}
+
+void HELPER(cgi_hook_qentry_arg)(CPUArchState *env) {
+  cgi_get_qentry_arg(env);
+}
+
+extern char **env_list;
+void HELPER(cgi_hook_qentry_getint_arg)(CPUArchState *env) {
+  cgi_get_qentry_getint_arg(env, env_list);
+}
+
+void HELPER(cgi_hook_qentry_getstr_arg)(CPUArchState *env) {
+  cgi_get_qentry_getstr_arg(env, env_list);
+}
+
+void HELPER(cgi_hook_free_arg)(CPUArchState *env) {
+  cgi_get_free_arg(env);
+}
+
 uint32_t afl_hash_ip(uint64_t);
 
 void HELPER(afl_entry_routine)(CPUArchState *env) {

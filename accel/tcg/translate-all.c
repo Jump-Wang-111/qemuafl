@@ -2120,6 +2120,21 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     if (pc == hook[STRTOK].addr) {
         gen_helper_cgi_hook_strtok_arg(cpu_env);
     }
+    if (hook[QCGISESS_OEM_INIT].enabled && pc == hook[QCGISESS_OEM_INIT].addr) {
+        gen_helper_cgi_hook_qcgisess_oem_init_arg(cpu_env);
+    }
+    if (hook[QENTRY].enabled && pc == hook[QENTRY].addr) {
+        gen_helper_cgi_hook_qentry_arg(cpu_env);
+    }
+    if (hook[QENTRY_GETINT].enabled && pc == hook[QENTRY_GETINT].addr) {
+        gen_helper_cgi_hook_qentry_getint_arg(cpu_env);
+    }
+    if (hook[QENTRY_GETSTR].enabled && pc == hook[QENTRY_GETSTR].addr) {
+        gen_helper_cgi_hook_qentry_getstr_arg(cpu_env);
+    }
+    if (hook[FREE].enabled && pc == hook[FREE].addr) {
+        gen_helper_cgi_hook_free_arg(cpu_env);
+    }
     
     /* CGI fuzz: hook ret */
     TCGv tcg_pc = tcg_const_tl(pc);
