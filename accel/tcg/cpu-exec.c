@@ -70,6 +70,14 @@ extern bool cgi_debug_env;
 extern bool cgi_test_crash;
 extern bool cgi_debug;
 extern bool hook_debug;
+extern char *exec_path;
+
+static const char *cgi_script_filename(void) {
+
+  if (exec_path && *exec_path) { return exec_path; }
+  return "/usr/local/bin/spx_restservice";
+
+}
 
 /***************************
  * VARIOUS AUXILIARY STUFF *
@@ -301,6 +309,12 @@ static void restore_memory_snapshot(void) {
 
 /* CGI FUZZ */
 static void cgi_shm_feedback(void) {
+  use_cgi_feedback = 0;
+  cgi_feedback = NULL;
+
+  if (!cgi_feedback_feature_enabled()) {
+    return;
+  }
   
   char *id_str = getenv(SHM_CGI_FD_ENV_VAR);
 
@@ -312,8 +326,8 @@ static void cgi_shm_feedback(void) {
 
     if (!map || map == (void *)-1) {
 
-      perror("[ERROR] Could not access cgi feedback shared memory");
-      exit(1);
+      perror("[WARN] Could not access cgi feedback shared memory");
+      return;
 
     }
 
@@ -328,15 +342,21 @@ static void cgi_shm_feedback(void) {
 
   } else {
 
-    fprintf(stderr,
-            "[ERROR] Variable for cgi feedback shared memory is not set\n");
-    // exit(1);
-    use_cgi_feedback = 0;
+    if (cgi_debug) {
+      fprintf(stderr,
+              "[DEBUG] Variable for cgi feedback shared memory is not set\n");
+    }
   }
 
 }
 
 static void cgi_shm_regex(void) {
+  use_cgi_regex = 0;
+  cgi_regex = NULL;
+
+  if (!cgi_feedback_feature_enabled()) {
+    return;
+  }
   
   char *id_str = getenv(SHM_CGI_RE_ENV_VAR);
 
@@ -348,8 +368,8 @@ static void cgi_shm_regex(void) {
 
     if (!map || map == (void *)-1) {
 
-      perror("[ERROR] Could not access cgi regex shared memory");
-      exit(1);
+      perror("[WARN] Could not access cgi regex shared memory");
+      return;
 
     }
 
@@ -364,10 +384,10 @@ static void cgi_shm_regex(void) {
 
   } else {
 
-    fprintf(stderr,
-            "[ERROR] Variable for cgi regex shared memory is not set\n");
-    // exit(1);
-    use_cgi_regex = 0;
+    if (cgi_debug) {
+      fprintf(stderr,
+              "[DEBUG] Variable for cgi regex shared memory is not set\n");
+    }
   }
 
 }
@@ -735,109 +755,141 @@ void afl_setup(void) {
 /* Fork server logic, invoked once we hit _start. */
 
 void afl_forkserver(CPUState *cpu) {
+  int envbridge_enabled = cgi_envbridge_feature_enabled();
+  int feedback_enabled = cgi_feedback_feature_enabled() && envbridge_enabled;
+  int context_enabled = cgi_context_feature_enabled() && envbridge_enabled;
+  target_ulong g_environ_addr = 0;
+  uint64_t g2h_environ_addr = 0;
+  target_ulong g_environ = 0;
+  target_ulong new_fake_heap = 0;
+  target_ulong i = 0;
+  target_ulong old_entries = 0;
+  target_ulong new_entries = ENV_MAX_ENTRY;
+  target_ulong new_env_list = 0;
+  target_ulong new_env_strs = 0;
 
   /* CGI fuzz */
 
-  /* hook env for cgi fuzz */
   resolve_hook_addrs();
-  target_ulong g_environ_addr = hook[ENVIRON].addr;
-  uint64_t g2h_environ_addr = g2h_untagged(g_environ_addr);
-  target_ulong g_environ = gval_from_h(g2h_environ_addr);
-
-  if (cgi_debug) {
-    fprintf(stderr, "[DEBUG] Getenv func addr: 0x%08x\n", g_environ);
+  if (envbridge_enabled && !hook[ENVIRON].addr) {
+    fprintf(stderr,
+            "[WARN] CGI env bridge requested, but environ symbol was not "
+            "resolved. Disabling CGI bridge/features for this run.\n");
+    envbridge_enabled = 0;
+    feedback_enabled = 0;
+    context_enabled = 0;
   }
+  env_list = NULL;
+  env_strs = NULL;
 
-  target_ulong new_fake_heap = target_mmap(0,
-                                         CGI_FAKE_HEAP_SIZE,
-                                         PROT_READ | PROT_WRITE,
-                                         MAP_ANONYMOUS | MAP_PRIVATE,
-                                         -1, 0);
+  if (context_enabled) {
+    new_fake_heap = target_mmap(0,
+                                CGI_FAKE_HEAP_SIZE,
+                                PROT_READ | PROT_WRITE,
+                                MAP_ANONYMOUS | MAP_PRIVATE,
+                                -1, 0);
 
-  /* 按你 tree 里的 target_mmap 返回值约定检查错误 */
-  if ((abi_long)new_fake_heap < 0) {
-    fprintf(stderr, "[ERROR] Fail to mmap fake heap: %lx\n", (long)new_fake_heap);
-    exit(1);
-  }
-
-  cgi_fake_heap_set_range(new_fake_heap, CGI_FAKE_HEAP_SIZE);
-
-  if (cgi_debug) {
-    fprintf(stderr, "[DEBUG] Set fake heap: %lx - %lx\n",
-            (unsigned long)new_fake_heap,
-            (unsigned long)(new_fake_heap + CGI_FAKE_HEAP_SIZE));
-  }
-    
-  target_ulong i;
-  for (i = 0; gval_from_g(g_environ + i); i += 4);
-  target_ulong old_entries   = i / 4;
-  target_ulong new_entries   = ENV_MAX_ENTRY;
-
-  target_ulong new_env_list  = target_mmap(0,
-                                        (old_entries + new_entries + 2) * sizeof(target_ulong),
-                                        PROT_READ|PROT_WRITE,
-                                        MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
-  
-  target_ulong new_env_strs  = target_mmap(0,
-                                        (new_entries + 2) * ENV_MAX_LEN,
-                                        PROT_READ|PROT_WRITE,
-                                        MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
-  
-  memcpy(g2h_untagged(new_env_list), g2h_untagged(g_environ), sizeof(target_ulong) * old_entries);
-  gval_from_g(g_environ + i) = 0;
-  
-  g_environ = *(target_ulong*)g2h_environ_addr = new_env_list;
-  env_list = (char **)g2h_untagged(g_environ + i);
-  env_strs = (char *)g2h_untagged(new_env_strs);
-  if (cgi_debug) {
-    fprintf(stderr, "[DEBUG] Set new env list: %lx\n", new_env_list);
-    fprintf(stderr, "[DEBUG] Set new env strs: %lx\n", new_env_strs);
-  }
-
-  // ========================================================================
-  // Fixed Environment Variables (Server-Enforced)
-  // ========================================================================
-  // These variables mimic the behavior of a real web server (Lighttpd/Apache).
-  // They are placed at the VERY BEGINNING of the env array.
-  // Since getenv() typically returns the first match, this prevents the fuzzer 
-  // from overwriting critical server-side variables via HTTP headers.
-  // ========================================================================
-  const char *fixed_envs[][2] = {
-    {"GATEWAY_INTERFACE", "CGI/1.1"},         // Required by RFC 3875
-    {"SERVER_SOFTWARE",   "lighttpd/1.4.55"}, // Mock a specific server version
-    {"SERVER_ADDR",       "127.0.0.1"},       // Crucial: Prevents crash in binding checks
-    {"SERVER_PORT",       "80"},
-    {"SERVER_NAME",       "localhost"},
-    {"REMOTE_ADDR",       "127.0.0.1"},       // Mock client IP
-    {"REDIRECT_STATUS",   "200"},             // Critical: Required by many PHP-CGI binaries to run
-    {"DOCUMENT_ROOT",     "/usr/local/www"},   // Ensure this path exists in your rootfs
-    // Recommendation: Set this to the actual path of the binary in the guest
-    {"SCRIPT_FILENAME",   "/usr/local/bin/spx_restservice"}, 
-    {NULL, NULL}
-  };
-
-  i = 0;
-  while (fixed_envs[i][0]) {
-    // Construct Key=Value string safely
-    snprintf(env_strs, ENV_MAX_LEN, "%s=%s", fixed_envs[i][0], fixed_envs[i][1]);
-    
-    // Map host string address to guest address space and store in env_list
-    gval_from_h(env_list) = h2g(env_strs);
-    
-    if (cgi_debug_env) {
-        fprintf(stderr, "[DEBUG] Add Fixed env: %s\n", env_strs);
+    if ((abi_long)new_fake_heap < 0) {
+      fprintf(stderr, "[ERROR] Fail to mmap fake heap: %lx\n", (long)new_fake_heap);
+      exit(1);
     }
 
-    // Advance pointers
-    env_strs += ENV_MAX_LEN;
-    // Move to the next pointer slot (handling target pointer size)
-    env_list = (char **)((uint64_t)env_list + sizeof(target_ulong)); 
-    i++;
+    cgi_fake_heap_set_range(new_fake_heap, CGI_FAKE_HEAP_SIZE);
+
+    if (cgi_debug) {
+      fprintf(stderr, "[DEBUG] Set fake heap: %lx - %lx\n",
+              (unsigned long)new_fake_heap,
+              (unsigned long)(new_fake_heap + CGI_FAKE_HEAP_SIZE));
+    }
+  } else {
+    cgi_fake_heap_set_range(0, 0);
   }
 
-  if (cgi_test_crash) {
-    set_guest_env_file(afl_inputfile, env_list, env_strs);
-    if (cgi_debug_env) debug_env(g_environ);
+  if (envbridge_enabled) {
+    g_environ_addr = hook[ENVIRON].addr;
+    g2h_environ_addr = g2h_untagged(g_environ_addr);
+    g_environ = gval_from_h(g2h_environ_addr);
+
+    if (cgi_debug) {
+      fprintf(stderr, "[DEBUG] Getenv func addr: 0x%08x\n", g_environ);
+    }
+
+    for (i = 0; gval_from_g(g_environ + i); i += 4);
+    old_entries = i / 4;
+
+    new_env_list = target_mmap(0,
+                               (old_entries + new_entries + 2) * sizeof(target_ulong),
+                               PROT_READ | PROT_WRITE,
+                               MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+
+    new_env_strs = target_mmap(0,
+                               (new_entries + 2) * ENV_MAX_LEN,
+                               PROT_READ | PROT_WRITE,
+                               MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+
+    memcpy(g2h_untagged(new_env_list), g2h_untagged(g_environ),
+           sizeof(target_ulong) * old_entries);
+    gval_from_g(g_environ + i) = 0;
+
+    g_environ = *(target_ulong *)g2h_environ_addr = new_env_list;
+    env_list = (char **)g2h_untagged(g_environ + i);
+    env_strs = (char *)g2h_untagged(new_env_strs);
+    if (cgi_debug) {
+      fprintf(stderr, "[DEBUG] Set new env list: %lx\n", new_env_list);
+      fprintf(stderr, "[DEBUG] Set new env strs: %lx\n", new_env_strs);
+    }
+
+    const char *base_envs[][2] = {
+      {"GATEWAY_INTERFACE", "CGI/1.1"},
+      {"REDIRECT_STATUS",   "200"},
+      {"DOCUMENT_ROOT",     "/usr/local/www"},
+      {"SCRIPT_FILENAME",   cgi_script_filename()},
+      {NULL, NULL}
+    };
+
+    i = 0;
+    while (base_envs[i][0]) {
+      snprintf(env_strs, ENV_MAX_LEN, "%s=%s", base_envs[i][0], base_envs[i][1]);
+      gval_from_h(env_list) = h2g(env_strs);
+
+      if (cgi_debug_env) {
+        fprintf(stderr, "[DEBUG] Add Fixed env: %s\n", env_strs);
+      }
+
+      env_strs += ENV_MAX_LEN;
+      env_list = (char **)((uint64_t)env_list + sizeof(target_ulong));
+      i++;
+    }
+
+    if (context_enabled) {
+      const char *context_envs[][2] = {
+        {"SERVER_SOFTWARE", "lighttpd/1.4.55"},
+        {"SERVER_ADDR",     "127.0.0.1"},
+        {"SERVER_PORT",     "80"},
+        {"SERVER_NAME",     "localhost"},
+        {"REMOTE_ADDR",     "127.0.0.1"},
+        {NULL, NULL}
+      };
+
+      i = 0;
+      while (context_envs[i][0]) {
+        snprintf(env_strs, ENV_MAX_LEN, "%s=%s", context_envs[i][0], context_envs[i][1]);
+        gval_from_h(env_list) = h2g(env_strs);
+
+        if (cgi_debug_env) {
+          fprintf(stderr, "[DEBUG] Add Context env: %s\n", env_strs);
+        }
+
+        env_strs += ENV_MAX_LEN;
+        env_list = (char **)((uint64_t)env_list + sizeof(target_ulong));
+        i++;
+      }
+    }
+
+    // if (cgi_test_crash) {
+    //   set_guest_env_file(afl_inputfile, env_list, env_strs);
+    //   if (cgi_debug_env) debug_env(g_environ);
+    // }
   }
 
 
@@ -868,7 +920,22 @@ void afl_forkserver(CPUState *cpu) {
   /* Tell the parent that we're alive. If the parent doesn't want
      to talk, assume that we're not running in forkserver mode. */
 
-  if (write(FORKSRV_FD + 1, tmp, 4) != 4) return;
+  if (write(FORKSRV_FD + 1, tmp, 4) != 4) {
+    if (feedback_enabled) {
+      cgi_shm_feedback();
+      cgi_shm_regex();
+    } else {
+      use_cgi_feedback = 0;
+      use_cgi_regex = 0;
+      cgi_feedback = NULL;
+      cgi_regex = NULL;
+    }
+    if (envbridge_enabled && afl_inputfile && env_list && env_strs) {
+      set_guest_env_file(afl_inputfile, env_list, env_strs);
+      if (cgi_debug_env) debug_env(g_environ);
+    }
+    return;
+  }
 
   afl_forksrv_pid = getpid();
 
@@ -892,8 +959,15 @@ void afl_forkserver(CPUState *cpu) {
 
   }
 
-  cgi_shm_feedback();
-  cgi_shm_regex();
+  if (feedback_enabled) {
+    cgi_shm_feedback();
+    cgi_shm_regex();
+  } else {
+    use_cgi_feedback = 0;
+    use_cgi_regex = 0;
+    cgi_feedback = NULL;
+    cgi_regex = NULL;
+  }
 
   /* All right, let's await orders... */
 
@@ -902,8 +976,12 @@ void afl_forkserver(CPUState *cpu) {
     /* Whoops, parent dead? */
 
     if (read(FORKSRV_FD, &was_killed, 4) != 4) {
-      target_munmap(new_env_list, (old_entries + new_entries + 2) * sizeof(target_ulong));
-      target_munmap(new_env_strs, (new_entries + 2) * ENV_MAX_LEN);
+      if (new_env_list) {
+        target_munmap(new_env_list, (old_entries + new_entries + 2) * sizeof(target_ulong));
+      }
+      if (new_env_strs) {
+        target_munmap(new_env_strs, (new_entries + 2) * ENV_MAX_LEN);
+      }
       free(afl_inputfile);
       fprintf(stderr, "[DEBUG] parent dead");
       exit(2);
@@ -950,7 +1028,7 @@ void afl_forkserver(CPUState *cpu) {
         close(FORKSRV_FD + 1);
         close(t_fd[0]);
 
-        if (!cgi_persistent) {
+        if (envbridge_enabled && !cgi_persistent && afl_inputfile && env_list && env_strs) {
           set_guest_env_file(afl_inputfile, env_list, env_strs);
           if (cgi_debug_env) debug_env(g_environ);
         }
@@ -1061,9 +1139,9 @@ void cgi_get_regexec_arg(CPUArchState *env) {
     if (strcmp((char *)g2h_untagged(arg2), NEW_ENV_FLAG)) return;
     
     char *p = cgi_feedback->buf + FD_ENTRY_LEN * cgi_feedback->target;
-    set_feedback_env(p, "regexec", path);
-
-    cgi_feedback->pair++;
+    if (set_feedback_env(p, "regexec", path)) {
+      cgi_feedback->pair++;
+    }
 
     return;
   }
@@ -1112,9 +1190,9 @@ void cgi_get_strcmp_arg(CPUArchState *env) {
   }
 
   char *p = cgi_feedback->buf + FD_ENTRY_LEN * cgi_feedback->target;
-  set_feedback_env(p, "strcmp", str);
-
-  cgi_feedback->pair++;
+  if (set_feedback_env(p, "strcmp", str)) {
+    cgi_feedback->pair++;
+  }
 
 }
 
@@ -1141,9 +1219,9 @@ void cgi_get_strncmp_arg(CPUArchState *env) {
   }
 
   char *p = cgi_feedback->buf + FD_ENTRY_LEN * cgi_feedback->target;
-  set_feedback_env(p, "strncmp", str);
-
-  cgi_feedback->pair++;
+  if (set_feedback_env(p, "strncmp", str)) {
+    cgi_feedback->pair++;
+  }
 
 }
 
@@ -1170,9 +1248,9 @@ void cgi_get_strcasecmp_arg(CPUArchState *env) {
   }
 
   char *p = cgi_feedback->buf + FD_ENTRY_LEN * cgi_feedback->target;
-  set_feedback_env(p, "strcasecmp", str);
-
-  cgi_feedback->pair++;
+  if (set_feedback_env(p, "strcasecmp", str)) {
+    cgi_feedback->pair++;
+  }
 
 }
 
@@ -1199,9 +1277,9 @@ void cgi_get_strncasecmp_arg(CPUArchState *env) {
   }
 
   char *p = cgi_feedback->buf + FD_ENTRY_LEN * cgi_feedback->target;
-  set_feedback_env(p, "strncasecmp", str);
-
-  cgi_feedback->pair++;
+  if (set_feedback_env(p, "strncasecmp", str)) {
+    cgi_feedback->pair++;
+  }
   
 }
 
@@ -1219,9 +1297,9 @@ void cgi_get_strstr_arg(CPUArchState *env) {
   if (strcmp(str1, NEW_ENV_FLAG)) return;
 
   char *p = cgi_feedback->buf + FD_ENTRY_LEN * cgi_feedback->target;
-  set_feedback_env(p, "strstr", str2);
-
-  cgi_feedback->pair++;
+  if (set_feedback_env(p, "strstr", str2)) {
+    cgi_feedback->pair++;
+  }
 
 }
 
@@ -1239,9 +1317,9 @@ void cgi_get_strtok_arg(CPUArchState *env) {
   if (strcmp(str1, NEW_ENV_FLAG)) return;
 
   char *p = cgi_feedback->buf + FD_ENTRY_LEN * cgi_feedback->target;
-  set_feedback_env(p, "strtok", str2);
-
-  cgi_feedback->pair++;
+  if (set_feedback_env(p, "strtok", str2)) {
+    cgi_feedback->pair++;
+  }
 
 }
 
@@ -1256,6 +1334,10 @@ static inline void cgi_force_ret(CPUArchState *env, target_ulong retval) {
 }
 
 void cgi_get_qcgisess_oem_init_arg(CPUArchState *env) {
+    if (!cgi_context_feature_enabled()) {
+        return;
+    }
+
     /*
      * ARM32:
      * r0 = request
@@ -1286,6 +1368,13 @@ void cgi_get_qentry_arg(CPUArchState *env) {
 }
 
 void cgi_get_qentry_ret(CPUArchState *env, target_ulong pc) {
+    if (!cgi_context_feature_enabled()) {
+        hook[QENTRY].ret_addr = 0;
+        hook[QENTRY_GETSTR].enabled = false;
+        hook[QENTRY_GETINT].enabled = false;
+        return;
+    }
+
     if (hook[QENTRY].ret_addr == 0 || pc != hook[QENTRY].ret_addr) {
         return;
     }
@@ -1311,6 +1400,10 @@ void cgi_get_qentry_ret(CPUArchState *env, target_ulong pc) {
 }
 
 void cgi_get_qentry_getint_arg(CPUArchState *env, char **env_list) {
+  if (!cgi_context_feature_enabled()) {
+    return;
+  }
+
   /*
     * r0 = this
     * r1 = key
@@ -1353,6 +1446,10 @@ void cgi_get_qentry_getint_arg(CPUArchState *env, char **env_list) {
 }
 
 void cgi_get_qentry_getstr_arg(CPUArchState *env, char **env_list) {
+    if (!cgi_context_feature_enabled()) {
+        return;
+    }
+
     /*
      * r0 = this
      * r1 = key
@@ -1404,6 +1501,10 @@ void cgi_get_qentry_getstr_arg(CPUArchState *env, char **env_list) {
 }
 
 void cgi_get_free_arg(CPUArchState *env) {
+  if (!cgi_context_feature_enabled()) {
+      return;
+  }
+
   target_ulong ptr = hook[FREE].arg1 = env->regs[0];
 
   if (cgi_fake_heap_contains(ptr)) {
@@ -1495,6 +1596,14 @@ void cgi_get_call_ret(CPUArchState *env, target_ulong pc) {
       if (!strcmp(p, env_name)) return; 
     }
     
+    if (cgi_feedback->num >= CGI_FEEDBACK_MAX_ENVS) {
+      if (hook_debug) {
+        fprintf(stderr, "[HOOK] feedback env limit reached, ignore %s\n",
+                env_name);
+      }
+      return;
+    }
+
     strcpy(cgi_feedback->buf + cgi_feedback->num * FD_ENTRY_LEN, env_name);
     cgi_feedback->num++;
     if (hook_debug) {

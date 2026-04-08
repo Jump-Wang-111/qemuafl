@@ -27,11 +27,19 @@
 
 #define SHM_CGI_FD_ENV_VAR  "__AFL_SHM_CGI_FD_ID"
 #define SHM_CGI_RE_ENV_VAR  "__AFL_SHM_CGI_RE_ID"
+#define CGI_ENABLE_ENVBRIDGE_ENV "CGI_ENABLE_ENVBRIDGE"
+#define CGI_ENABLE_FEEDBACK_ENV  "CGI_ENABLE_FEEDBACK"
+#define CGI_ENABLE_CONTEXT_ENV   "CGI_ENABLE_CONTEXT"
+#define AFL_CGI_ENABLE_ENVBRIDGE_ENV "AFL_CGI_ENABLE_ENVBRIDGE"
+#define AFL_CGI_ENABLE_FEEDBACK_ENV  "AFL_CGI_ENABLE_FEEDBACK"
+#define AFL_CGI_ENABLE_CONTEXT_ENV   "AFL_CGI_ENABLE_CONTEXT"
 #define ENV_MAX_LEN         4096
 #define FD_ENTRY_LEN        (4096 * 4)
 #define ENV_MAX_ENTRY       256
 #define ENV_NAME_MAX_LEN    128
 #define NEW_ENV_FLAG        "NEW_ENV"
+#define CGI_FEEDBACK_MAX_ENVS 32
+#define CGI_FEEDBACK_MAX_PAIRS 64
 
 #define QENTRY_GETSTR_OFF   24
 #define QENTRY_GETINT_OFF   36
@@ -159,6 +167,9 @@ void debug_env(target_ulong g_environ);
 /* old name kept for compatibility */
 // void get_libc_sym_addr(void);
 void resolve_hook_addrs(void);
+int cgi_envbridge_feature_enabled(void);
+int cgi_feedback_feature_enabled(void);
+int cgi_context_feature_enabled(void);
 
 char *get_guest_env(const char *name, char **env_list);
 void set_guest_env(char *input, int length, char **env_list, char *env_strs);
@@ -166,7 +177,7 @@ void set_guest_env_file(char *inputfile, char **env_list, char *env_strs);
 void cheat_persistent_ptr(struct api_regs *, uint64_t, uint8_t *, uint32_t);
 void set_guest_env_persistent(uint8_t *input_buf, uint32_t input_buf_len,
                               char **env_list, char *env_strs);
-void set_feedback_env(char *env, char *func, char *fb);
+int set_feedback_env(char *env, char *func, char *fb);
 
 /* role / fake heap helpers */
 int  get_role_by_env(char **env_list);

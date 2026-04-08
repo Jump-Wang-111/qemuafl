@@ -2093,31 +2093,31 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     afl_gen_trace(pc);
     
     /* CGI fuzz: hook arg */
-    if (pc == hook[GETENV].addr) {
+    if (hook[GETENV].enabled && pc == hook[GETENV].addr) {
         gen_helper_cgi_hook_getenv_arg(cpu_env);
     }
-    if (pc == hook[REGCOMP].addr) {
+    if (hook[REGCOMP].enabled && pc == hook[REGCOMP].addr) {
         gen_helper_cgi_hook_regcomp_arg(cpu_env);
     }
-    if (pc == hook[REGEXEC].addr) {
+    if (hook[REGEXEC].enabled && pc == hook[REGEXEC].addr) {
         gen_helper_cgi_hook_regexec_arg(cpu_env);
     }
-    if (pc == hook[STRCMP].addr) {
+    if (hook[STRCMP].enabled && pc == hook[STRCMP].addr) {
         gen_helper_cgi_hook_strcmp_arg(cpu_env);
     } 
-    if (pc == hook[STRNCMP].addr) {
+    if (hook[STRNCMP].enabled && pc == hook[STRNCMP].addr) {
         gen_helper_cgi_hook_strncmp_arg(cpu_env);
     }    
-    if (pc == hook[STRCASECMP].addr) {
+    if (hook[STRCASECMP].enabled && pc == hook[STRCASECMP].addr) {
         gen_helper_cgi_hook_strcasecmp_arg(cpu_env);
     } 
-    if (pc == hook[STRNCASECMP].addr) {
+    if (hook[STRNCASECMP].enabled && pc == hook[STRNCASECMP].addr) {
         gen_helper_cgi_hook_strncasecmp_arg(cpu_env);
     }
-    if (pc == hook[STRSTR].addr) {
+    if (hook[STRSTR].enabled && pc == hook[STRSTR].addr) {
         gen_helper_cgi_hook_strstr_arg(cpu_env);
     }
-    if (pc == hook[STRTOK].addr) {
+    if (hook[STRTOK].enabled && pc == hook[STRTOK].addr) {
         gen_helper_cgi_hook_strtok_arg(cpu_env);
     }
     if (hook[QCGISESS_OEM_INIT].enabled && pc == hook[QCGISESS_OEM_INIT].addr) {

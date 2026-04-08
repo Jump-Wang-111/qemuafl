@@ -116,6 +116,96 @@ bool cgi_test_crash = false;
 bool cgi_debug = false;
 bool hook_debug = false;
 
+static int cgi_flag_value_enabled(const char *value, int default_value) {
+    if (!value || !*value) {
+        return default_value;
+    }
+
+    if (!strcmp(value, "0") || !strcmp(value, "off") ||
+        !strcmp(value, "false") || !strcmp(value, "no")) {
+        return 0;
+    }
+
+    if (!strcmp(value, "1") || !strcmp(value, "on") ||
+        !strcmp(value, "true") || !strcmp(value, "yes")) {
+        return 1;
+    }
+
+    return default_value;
+}
+
+static int cgi_flag_enabled_compat(const char *name, const char *legacy_name,
+                                   int default_value) {
+    const char *value = getenv(name);
+    if (!value || !*value) {
+        value = getenv(legacy_name);
+    }
+    return cgi_flag_value_enabled(value, default_value);
+}
+
+int cgi_feedback_feature_enabled(void) {
+    return cgi_flag_enabled_compat(CGI_ENABLE_FEEDBACK_ENV,
+                                   AFL_CGI_ENABLE_FEEDBACK_ENV, 1);
+}
+
+int cgi_envbridge_feature_enabled(void) {
+    return cgi_flag_enabled_compat(CGI_ENABLE_ENVBRIDGE_ENV,
+                                   AFL_CGI_ENABLE_ENVBRIDGE_ENV, 1);
+}
+
+int cgi_context_feature_enabled(void) {
+    return cgi_flag_enabled_compat(CGI_ENABLE_CONTEXT_ENV,
+                                   AFL_CGI_ENABLE_CONTEXT_ENV, 1);
+}
+
+static void reset_hook_state(int idx) {
+    hook[idx].addr = 0;
+    hook[idx].ret_addr = 0;
+    hook[idx].arg1 = 0;
+    hook[idx].arg2 = 0;
+    hook[idx].arg3 = 0;
+    hook[idx].arg4 = 0;
+}
+
+static void configure_cgi_hook_groups(void) {
+    int envbridge_enabled = cgi_envbridge_feature_enabled();
+    int feedback_enabled = cgi_feedback_feature_enabled() && envbridge_enabled;
+    int context_enabled = cgi_context_feature_enabled() && envbridge_enabled;
+    int feedback_hooks[] = {
+        GETENV, REGCOMP, REGEXEC, STRCMP, STRNCMP,
+        STRCASECMP, STRNCASECMP, STRSTR, STRTOK
+    };
+    int context_hooks[] = {
+        FREE, QENTRY, QCGISESS_OEM_INIT
+    };
+
+    hook[ENVIRON].enabled = envbridge_enabled;
+    if (!envbridge_enabled) {
+        reset_hook_state(ENVIRON);
+    }
+
+    for (size_t i = 0; i < sizeof(feedback_hooks) / sizeof(feedback_hooks[0]); ++i) {
+        hook[feedback_hooks[i]].enabled = feedback_enabled;
+        if (!feedback_enabled) {
+            reset_hook_state(feedback_hooks[i]);
+        }
+    }
+
+    for (size_t i = 0; i < sizeof(context_hooks) / sizeof(context_hooks[0]); ++i) {
+        hook[context_hooks[i]].enabled = context_enabled;
+        if (!context_enabled) {
+            reset_hook_state(context_hooks[i]);
+        }
+    }
+
+    if (!context_enabled) {
+        hook[QENTRY_GETSTR].enabled = false;
+        hook[QENTRY_GETINT].enabled = false;
+        reset_hook_state(QENTRY_GETSTR);
+        reset_hook_state(QENTRY_GETINT);
+    }
+}
+
 static inline size_t align_up(size_t x, size_t a) {
     return (x + a - 1) & ~(a - 1);
 }
@@ -319,6 +409,8 @@ void debug_env(target_ulong g_environ) {
 }
 
 void resolve_hook_addrs(void) {
+    configure_cgi_hook_groups();
+
     MapEntry **maplist = loadmaps();
     if (!maplist) return;
 
@@ -512,18 +604,32 @@ void set_guest_env_persistent(uint8_t *input_buf, uint32_t input_buf_len,
     set_guest_env((char *)input_buf, (int)input_buf_len, env_list, env_strs);
 }
 
-void set_feedback_env(char *env, char *func, char *fb) {
-    if (cgi_feedback->tlen + strlen(fb) + strlen(func) + 3 > ENV_MAX_LEN) return;
+int set_feedback_env(char *env, char *func, char *fb) {
+    if (!cgi_feedback || !env || !func || !fb) return 0;
 
-    char *start = cgi_feedback->tlen + env;
-    cgi_feedback->tlen += sprintf(start, "%s %s", func, fb) + 1;
+    size_t remaining = ENV_MAX_LEN - cgi_feedback->tlen;
+    if (remaining < 3) return 0;
+
+    char *start = env + cgi_feedback->tlen;
+    int written = snprintf(start, remaining, "%s %s", func, fb);
+    if (written <= 0 || (size_t)written + 1 > remaining) {
+        return 0;
+    }
 
     char *p = strchr(start, ' ');
+    if (!p) {
+        start[0] = '\0';
+        return 0;
+    }
+
     *p = '\0';
+    cgi_feedback->tlen += written + 1;
 
     if (hook_debug) {
         fprintf(stderr, "[FB] Set feedback env: %s-%s\n", start, p + 1);
     }
+
+    return 1;
 }
 
 /* ---------------- fake heap ---------------- */
