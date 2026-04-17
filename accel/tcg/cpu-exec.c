@@ -1333,6 +1333,33 @@ static inline void cgi_force_ret(CPUArchState *env, target_ulong retval) {
   cpu_loop_exit_noexc(env_cpu(env));
 }
 
+static void cgi_feedback_add_qentry_dict_entry(const char *entry) {
+  if (!use_cgi_feedback || !cgi_feedback || !entry || !*entry) return;
+  if (cgi_feedback->stage) return;
+
+  for (int i = 0; i < cgi_feedback->num; i++) {
+    char *p = cgi_feedback->buf + i * FD_ENTRY_LEN;
+    if (!strcmp(p, entry)) return;
+  }
+
+  if (cgi_feedback->num >= CGI_FEEDBACK_MAX_ENVS) {
+    if (hook_debug) {
+      fprintf(stderr, "[HOOK] feedback qentry.getstr limit reached, ignore %s\n",
+              entry);
+    }
+    return;
+  }
+
+  char *slot = cgi_feedback->buf + cgi_feedback->num * FD_ENTRY_LEN;
+  snprintf(slot, FD_ENTRY_LEN, "%s", entry);
+  cgi_feedback->num++;
+
+  if (hook_debug) {
+    fprintf(stderr, "[HOOK] Successful add qentry.getstr %s to shm\n", entry);
+    fprintf(stderr, "[HOOK] cur num %d\n", cgi_feedback->num);
+  }
+}
+
 void cgi_get_qcgisess_oem_init_arg(CPUArchState *env) {
     if (!cgi_context_feature_enabled()) {
         return;
@@ -1542,6 +1569,7 @@ void cgi_get_call_ret(CPUArchState *env, target_ulong pc) {
   if (pc == hook[QENTRY_GETSTR].ret_addr) {
     target_ulong ret = env->regs[0];
     const char *key = NULL;
+    char entry[FD_ENTRY_LEN];
 
     if (hook[QENTRY_GETSTR].arg2) {
       key = (const char *)g2h_untagged(hook[QENTRY_GETSTR].arg2);
@@ -1560,6 +1588,14 @@ void cgi_get_call_ret(CPUArchState *env, target_ulong pc) {
                 (unsigned)hook[QENTRY_GETSTR].arg1,
                 key ? key : "<null>",
                 (unsigned)hook[QENTRY_GETSTR].arg3);
+      }
+    }
+
+    if (!ret && key && *key) {
+      int written = snprintf(entry, sizeof(entry), "%s%s",
+                             QENTRY_DICT_PREFIX, key);
+      if (written > 0 && (size_t)written < sizeof(entry)) {
+        cgi_feedback_add_qentry_dict_entry(entry);
       }
     }
 
@@ -1589,13 +1625,13 @@ void cgi_get_call_ret(CPUArchState *env, target_ulong pc) {
     
     if (hook_debug)
       fprintf(stderr, "[HOOK] getenv(%s)=NULL\n", env_name);
-    
+
     /* update shared mem, tell afl to add new env */
     for (int i = 0; i < cgi_feedback->num; i++) {
       char *p = cgi_feedback->buf + i * FD_ENTRY_LEN;
-      if (!strcmp(p, env_name)) return; 
+      if (!strcmp(p, env_name)) return;
     }
-    
+
     if (cgi_feedback->num >= CGI_FEEDBACK_MAX_ENVS) {
       if (hook_debug) {
         fprintf(stderr, "[HOOK] feedback env limit reached, ignore %s\n",

@@ -38,6 +38,7 @@
 #define ENV_MAX_ENTRY       256
 #define ENV_NAME_MAX_LEN    128
 #define NEW_ENV_FLAG        "NEW_ENV"
+#define QENTRY_DICT_PREFIX  "__AFL_QENTRY_DICT__:"
 #define CGI_FEEDBACK_MAX_ENVS 32
 #define CGI_FEEDBACK_MAX_PAIRS 64
 
