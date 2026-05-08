@@ -110,6 +110,13 @@ struct cmp_map *__afl_cmp_map;
 
 static int forkserver_installed = 0;
 static int disable_caching = 0;
+static FILE *afl_pc_sample_fp;
+static uint64_t afl_pc_sample_period = 1000;
+static uint64_t afl_pc_sample_interval_us;
+static int64_t afl_pc_sample_start_us;
+static int64_t afl_pc_sample_last_us;
+static uint64_t afl_pc_sample_seen;
+static uint64_t afl_pc_sample_idx;
 
 unsigned char afl_fork_child;
 unsigned int  afl_forksrv_pid;
@@ -177,6 +184,144 @@ static inline TranslationBlock *tb_find(CPUState *, TranslationBlock *, int,
 static inline void              tb_add_jump(TranslationBlock *tb, int n,
                                             TranslationBlock *tb_next);
 static void                     afl_map_shm_fuzz(void);
+
+static void afl_pc_sample_close(void) {
+
+  if (afl_pc_sample_fp) {
+
+    fclose(afl_pc_sample_fp);
+    afl_pc_sample_fp = NULL;
+
+  }
+
+}
+
+static void afl_pc_sample_dump_maps(const char *path) {
+
+  FILE *fp = fopen(path, "w");
+  if (!fp) {
+
+    fprintf(stderr, "[AFL] ERROR: cannot open AFL_QEMU_PC_MAP_OUT=%s\n", path);
+    exit(1);
+
+  }
+
+  fprintf(fp, "guest_start\tguest_end\toffset\tperms\tpath\n");
+
+  GSList *map_info = read_self_maps();
+  for (GSList *s = map_info; s; s = g_slist_next(s)) {
+
+    MapInfo *e = (MapInfo *)s->data;
+
+    if (h2g_valid(e->start)) {
+
+      unsigned long min = e->start;
+      unsigned long max = e->end;
+      int flags = page_get_flags(h2g(min));
+
+      max = h2g_valid(max - 1) ? max :
+            (uintptr_t)AFL_G2H(GUEST_ADDR_MAX) + 1;
+
+      if (page_check_range(h2g(min), max - min, flags) == -1) {
+
+        continue;
+
+      }
+
+      fprintf(fp, "0x%llx\t0x%llx\t0x%llx\t%c%c%c%c\t%s\n",
+              (unsigned long long)h2g(min), (unsigned long long)h2g(max),
+              (unsigned long long)e->offset, e->is_read ? 'r' : '-',
+              e->is_write ? 'w' : '-', e->is_exec ? 'x' : '-',
+              e->is_priv ? 'p' : 's', e->path ? e->path : "");
+
+    }
+
+  }
+
+  free_self_maps(map_info);
+  fclose(fp);
+
+}
+
+static void afl_pc_sample_setup(void) {
+
+  char *sample_out = getenv("AFL_QEMU_PC_SAMPLE_OUT");
+  char *map_out = getenv("AFL_QEMU_PC_MAP_OUT");
+  char *period_str = getenv("AFL_QEMU_PC_SAMPLE_PERIOD");
+  char *interval_str = getenv("AFL_QEMU_PC_SAMPLE_INTERVAL_US");
+
+  if (period_str && *period_str) {
+
+    uint64_t period = strtoull(period_str, NULL, 10);
+    if (period > 0) { afl_pc_sample_period = period; }
+
+  }
+
+  if (interval_str && *interval_str) {
+
+    uint64_t interval = strtoull(interval_str, NULL, 10);
+    if (interval > 0) { afl_pc_sample_interval_us = interval; }
+
+  }
+
+  if (map_out && *map_out) { afl_pc_sample_dump_maps(map_out); }
+
+  if (!sample_out || !*sample_out || afl_pc_sample_fp) { return; }
+
+  afl_pc_sample_fp = fopen(sample_out, "w");
+  if (!afl_pc_sample_fp) {
+
+    fprintf(stderr, "[AFL] ERROR: cannot open AFL_QEMU_PC_SAMPLE_OUT=%s\n",
+            sample_out);
+    exit(1);
+
+  }
+
+  setvbuf(afl_pc_sample_fp, NULL, _IOLBF, 0);
+  if (afl_pc_sample_interval_us > 0) {
+
+    afl_pc_sample_start_us = g_get_monotonic_time();
+    afl_pc_sample_last_us = afl_pc_sample_start_us;
+    fprintf(afl_pc_sample_fp, "timestamp_us\tguest_pc\n");
+
+  } else {
+
+    fprintf(afl_pc_sample_fp, "sample_idx\tguest_pc\n");
+
+  }
+  atexit(afl_pc_sample_close);
+
+}
+
+static inline void afl_pc_sample_tb(TranslationBlock *tb) {
+
+  if (!afl_pc_sample_fp) { return; }
+
+  afl_pc_sample_seen++;
+  if ((afl_pc_sample_seen % afl_pc_sample_period) != 0) { return; }
+
+  if (afl_pc_sample_interval_us > 0) {
+
+    int64_t now_us = g_get_monotonic_time();
+    if ((uint64_t)(now_us - afl_pc_sample_last_us) <
+        afl_pc_sample_interval_us) {
+
+      return;
+
+    }
+    afl_pc_sample_last_us = now_us;
+    fprintf(afl_pc_sample_fp, "%lld\t0x" TARGET_FMT_lx "\n",
+            (long long)(now_us - afl_pc_sample_start_us), tb->pc);
+
+  } else {
+
+    afl_pc_sample_idx++;
+    fprintf(afl_pc_sample_fp, "%llu\t0x" TARGET_FMT_lx "\n",
+            (unsigned long long)afl_pc_sample_idx, tb->pc);
+
+  }
+
+}
 
 /*************************
  * ACTUAL IMPLEMENTATION *
@@ -435,6 +580,8 @@ void afl_setup(void) {
   char *id_str = getenv(SHM_ENV_VAR), *inst_r = getenv("AFL_INST_RATIO");
 
   int shm_id;
+
+  afl_pc_sample_setup();
 
   if (inst_r) {
 
@@ -2537,6 +2684,7 @@ static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
     int32_t insns_left;
 
     trace_exec_tb(tb, tb->pc);
+    afl_pc_sample_tb(tb);
     tb = cpu_tb_exec(cpu, tb, tb_exit);
     if (*tb_exit != TB_EXIT_REQUESTED) {
         *last_tb = tb;
