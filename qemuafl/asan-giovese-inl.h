@@ -33,6 +33,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <stdint.h>
 #include <unistd.h>
 #include <signal.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <assert.h>
 
@@ -100,7 +101,88 @@ void asan_giovese_alloc_insert(target_ulong start, target_ulong end,
 void* __ag_high_shadow = HIGH_SHADOW_ADDR;
 void* __ag_low_shadow = LOW_SHADOW_ADDR;
 
+static const char* qasan_check_filter_name(int filter) {
+
+  switch (filter) {
+
+    case QASAN_CHECK_FILTER_ALL: return "all";
+    case QASAN_CHECK_FILTER_OOB_READ: return "oob-read";
+    case QASAN_CHECK_FILTER_OOB_WRITE: return "oob-write";
+    case QASAN_CHECK_FILTER_UAF_READ: return "uaf-read";
+    case QASAN_CHECK_FILTER_UAF_WRITE: return "uaf-write";
+    case QASAN_CHECK_FILTER_OTHER: return "other";
+
+  }
+
+  return "all";
+
+}
+
+static int qasan_parse_check_filter(const char* value, int* valid) {
+
+  *valid = 1;
+
+  if (!value) return QASAN_CHECK_FILTER_ALL;
+  if (!strcmp(value, "all")) return QASAN_CHECK_FILTER_ALL;
+  if (!strcmp(value, "oob-read")) return QASAN_CHECK_FILTER_OOB_READ;
+  if (!strcmp(value, "oob-write")) return QASAN_CHECK_FILTER_OOB_WRITE;
+  if (!strcmp(value, "uaf-read")) return QASAN_CHECK_FILTER_UAF_READ;
+  if (!strcmp(value, "uaf-write")) return QASAN_CHECK_FILTER_UAF_WRITE;
+  if (!strcmp(value, "other")) return QASAN_CHECK_FILTER_OTHER;
+
+  *valid = 0;
+  return QASAN_CHECK_FILTER_ALL;
+
+}
+
+static int qasan_check_filter_allows(int report_filter) {
+
+  return qasan_check_filter == QASAN_CHECK_FILTER_ALL ||
+         qasan_check_filter == report_filter;
+
+}
+
+static int qasan_filter_for_poison(int access_type, uint8_t poison_byte) {
+
+  switch (poison_byte) {
+
+    case ASAN_HEAP_RZ:
+    case ASAN_HEAP_LEFT_RZ:
+    case ASAN_HEAP_RIGHT_RZ:
+      return access_type == ACCESS_TYPE_LOAD ? QASAN_CHECK_FILTER_OOB_READ
+                                             : QASAN_CHECK_FILTER_OOB_WRITE;
+
+    case ASAN_HEAP_FREED:
+      return access_type == ACCESS_TYPE_LOAD ? QASAN_CHECK_FILTER_UAF_READ
+                                             : QASAN_CHECK_FILTER_UAF_WRITE;
+
+  }
+
+  return QASAN_CHECK_FILTER_OTHER;
+
+}
+
 void asan_giovese_init(void) {
+
+  int         valid_filter = 1;
+  const char* filter_env = getenv("QASAN_CHECK_FILTER");
+  qasan_check_filter = qasan_parse_check_filter(filter_env, &valid_filter);
+
+  if (!valid_filter) {
+
+    fprintf(stderr,
+            "WARNING: invalid QASAN_CHECK_FILTER='%s', falling back to all\n",
+            filter_env);
+
+  }
+
+  const char* debug_filter = getenv("QASAN_FILTER_DEBUG");
+  if (debug_filter && !strcmp(debug_filter, "1")) {
+
+    fprintf(stderr, "QASAN_CHECK_FILTER=%s\n",
+            qasan_check_filter_name(qasan_check_filter));
+
+  }
 
 #if UINTPTR_MAX == 0xffffffff
   fprintf(stderr, "ERROR: Cannot allocate sanitizer shadow memory on 32 bit "
@@ -848,7 +930,8 @@ static const char* poisoned_strerror(uint8_t poison_byte) {
 
 static int poisoned_find_error(target_ulong addr, size_t n,
                                target_ulong* fault_addr,
-                               const char**  err_string) {
+                               const char**  err_string,
+                               uint8_t*      poison_byte) {
 
   target_ulong start = addr;
   target_ulong end = start + n;
@@ -879,6 +962,7 @@ static int poisoned_find_error(target_ulong addr, size_t n,
       default: {
 
         if (*fault_addr == 0) *fault_addr = start;
+        *poison_byte = *shadow_addr;
         *err_string = poisoned_strerror(*shadow_addr);
         return 1;
 
@@ -894,12 +978,14 @@ static int poisoned_find_error(target_ulong addr, size_t n,
 
     uintptr_t rs = (uintptr_t)AFL_G2H((end & ~7) + 8);
     uint8_t*  last_shadow_addr = (uint8_t*)(rs >> 3) + SHADOW_OFFSET;
+    *poison_byte = *last_shadow_addr;
     *err_string = poisoned_strerror(*last_shadow_addr);
     return 1;
 
   }
 
   if (*fault_addr == 0) *fault_addr = addr;
+  *poison_byte = ASAN_USER;
   *err_string = "use-after-poison";
   return 1;
 
@@ -1303,8 +1389,14 @@ int asan_giovese_report_and_crash(int access_type, target_ulong addr, size_t n,
   asan_giovese_populate_context(&ctx, pc);
   target_ulong fault_addr = 0;
   const char*  error_type;
+  uint8_t      poison_byte = ASAN_USER;
 
-  if (!poisoned_find_error(addr, n, &fault_addr, &error_type)) return 0;
+  if (!poisoned_find_error(addr, n, &fault_addr, &error_type, &poison_byte))
+    return 0;
+
+  if (!qasan_check_filter_allows(
+          qasan_filter_for_poison(access_type, poison_byte)))
+    return 0;
   
   fprintf(stderr,
           "=================================================================\n"
@@ -1497,6 +1589,8 @@ int asan_giovese_deadly_signal(int signum, target_ulong addr, target_ulong pc, t
 
 int asan_giovese_badfree(target_ulong addr, target_ulong pc) {
 
+  if (!qasan_check_filter_allows(QASAN_CHECK_FILTER_OTHER)) return 0;
+
   struct call_context ctx;
   asan_giovese_populate_context(&ctx, pc);
 
@@ -1533,4 +1627,3 @@ int asan_giovese_badfree(target_ulong addr, target_ulong pc) {
   abort();
 
 }
-

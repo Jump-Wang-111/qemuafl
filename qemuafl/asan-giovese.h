@@ -78,6 +78,19 @@ enum {
 
 };
 
+enum qasan_check_filter {
+
+  QASAN_CHECK_FILTER_ALL,
+  QASAN_CHECK_FILTER_OOB_READ,
+  QASAN_CHECK_FILTER_OOB_WRITE,
+  QASAN_CHECK_FILTER_UAF_READ,
+  QASAN_CHECK_FILTER_UAF_WRITE,
+  QASAN_CHECK_FILTER_OTHER,
+
+};
+
+extern int qasan_check_filter;
+
 struct call_context {
 
   target_ulong* addresses;
@@ -152,4 +165,3 @@ void asan_giovese_alloc_insert(target_ulong start, target_ulong end,
                                struct call_context* alloc_ctx);
 
 #endif
-

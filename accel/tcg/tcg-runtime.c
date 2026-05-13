@@ -518,6 +518,7 @@ void HELPER(exit_atomic)(CPUArchState *env)
 int qasan_max_call_stack = 16; // QASAN_MAX_CALL_STACK
 int qasan_symbolize = 1; // QASAN_SYMBOLIZE
 int use_qasan = 0;
+int qasan_check_filter = QASAN_CHECK_FILTER_ALL;
 
 __thread int qasan_disabled;
 
@@ -831,8 +832,10 @@ target_long qasan_actions_dispatcher(void *cpu_env,
         case QASAN_ACTION_DEALLOC: {
           struct chunk_info* ckinfo = asan_giovese_alloc_search(arg1);
           if (ckinfo) {
-            if (ckinfo->start != arg1)
+            if (ckinfo->start != arg1) {
               asan_giovese_badfree(arg1, PC_GET(env));
+              break;
+            }
             ckinfo->free_ctx = calloc(sizeof(struct call_context), 1);
             asan_giovese_populate_context(ckinfo->free_ctx, PC_GET(env));
           } else {
