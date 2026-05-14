@@ -1573,6 +1573,92 @@ void cgi_get_qentry_ret(CPUArchState *env, target_ulong pc) {
     hook[QENTRY].ret_addr = 0;
 }
 
+static int cgi_extendedpriv_from_role(int role) {
+  if (role <= 2) {
+    return 0;
+  }
+  if (role == 3) {
+    return 0x100;
+  }
+  return 0x103;
+}
+
+static int cgi_https_enabled_by_env(char **env_list) {
+  char *p = get_guest_env("HTTPS", env_list);
+  if (p && *p) {
+    if (!strcasecmp(p, "on") || !strcasecmp(p, "true") ||
+        !strcmp(p, "1")) {
+      return 1;
+    }
+    if (!strcasecmp(p, "off") || !strcasecmp(p, "false") ||
+        !strcmp(p, "0")) {
+      return 0;
+    }
+  }
+
+  p = get_guest_env("SERVER_PORT", env_list);
+  if (p && !strcmp(p, "443")) {
+    return 1;
+  }
+
+  return 0;
+}
+
+static int cgi_get_env_int(char **env_list, const char *name, int default_value,
+                           bool *found) {
+  char *p = get_guest_env(name, env_list);
+  if (!p || !*p) {
+    return default_value;
+  }
+
+  char *end = NULL;
+  long parsed = strtol(p, &end, 0);
+  if (end == p) {
+    return default_value;
+  }
+
+  if (found) {
+    *found = true;
+  }
+  return (int)parsed;
+}
+
+static void cgi_force_qentry_getstr(CPUArchState *env, target_ulong self,
+                                    const char *key, target_ulong newmem,
+                                    const char *value) {
+  if (!value || !*value) {
+    if (hook_debug) {
+      fprintf(stderr, "[HOOK] getstr(self=%x, %s) => env missing\n",
+              (unsigned)self, key);
+    }
+    return;
+  }
+
+  if (newmem == 0) {
+    if (hook_debug) {
+      fprintf(stderr, "[HOOK] getstr(self=%x, %s, 0) => %x: %s\n",
+              (unsigned)self, key, (unsigned)h2g(value), value);
+    }
+    cgi_force_ret(env, h2g(value));
+    return;
+  }
+
+  target_ulong dup = cgi_fake_heap_strdup(value);
+  if (!dup) {
+    if (hook_debug) {
+      fprintf(stderr, "[HOOK] getstr(self=%x, %s, 1) => fake heap alloc failed\n",
+              (unsigned)self, key);
+    }
+    return;
+  }
+
+  if (hook_debug) {
+    fprintf(stderr, "[HOOK] getstr(self=%x, %s, 1) => fake %x: %s\n",
+            (unsigned)self, key, (unsigned)dup, g2h_untagged(dup));
+  }
+  cgi_force_ret(env, dup);
+}
+
 void cgi_get_qentry_getint_arg(CPUArchState *env, char **env_list) {
   if (!cgi_context_feature_enabled()) {
     return;
@@ -1589,7 +1675,35 @@ void cgi_get_qentry_getint_arg(CPUArchState *env, char **env_list) {
 
   int role = get_role_by_env(env_list);
 
-  if (!key || !role) return;
+  if (!key) return;
+
+  if (!strcmp(key, "HTTPSEnabled")) {
+      int https_enabled = cgi_https_enabled_by_env(env_list);
+      if (hook_debug) {
+          fprintf(stderr, "[HOOK] getint(self=%x, %s) => %d\n",
+                  (unsigned)self, key, https_enabled);
+      }
+      cgi_force_ret(env, https_enabled);
+      return;
+  }
+
+  if (!strcmp(key, "racsession_id")) {
+      bool found = false;
+      int session_id = cgi_get_env_int(env_list, "HTTP_RACSESSION_ID", 1,
+                                       &found);
+      if (!found) {
+        session_id = cgi_get_env_int(env_list, "RACSESSION_ID", session_id,
+                                     &found);
+      }
+      if (hook_debug) {
+          fprintf(stderr, "[HOOK] getint(self=%x, %s) => %d\n",
+                  (unsigned)self, key, session_id);
+      }
+      cgi_force_ret(env, session_id);
+      return;
+  }
+
+  if (!role) return;
 
   if (!strcmp(key, "authorized")) {
       if (hook_debug) {
@@ -1606,6 +1720,16 @@ void cgi_get_qentry_getint_arg(CPUArchState *env, char **env_list) {
                   (unsigned)self, key);
       }
       cgi_force_ret(env, 0);
+      return;
+  }
+
+  if (!strcmp(key, "extendedpriv")) {
+      int extendedpriv = cgi_extendedpriv_from_role(role);
+      if (hook_debug) {
+          fprintf(stderr, "[HOOK] getint(self=%x, %s) => %d\n",
+                  (unsigned)self, key, extendedpriv);
+      }
+      cgi_force_ret(env, extendedpriv);
       return;
   }
 
@@ -1637,39 +1761,33 @@ void cgi_get_qentry_getstr_arg(CPUArchState *env, char **env_list) {
 
     if (!key) return;
 
-    if (!strcmp(key, "CSRFTOKEN")) {
-        char *p = get_guest_env("HTTP_X_CSRFTOKEN", env_list);
-        if (!p || !*p) {
-            if (hook_debug) {
-                fprintf(stderr, "[HOOK] getstr(self=%x, %s) => env missing\n",
-                        (unsigned)self, key);
-            }
-            return;
-        }
+    if (!strcmp(key, "username")) {
+        cgi_force_qentry_getstr(env, self, key, newmem,
+                                get_guest_env("HTTP_USERNAME", env_list));
+        return;
+    }
 
-        if (newmem == 0) {
-            if (hook_debug) {
-                fprintf(stderr, "[HOOK] getstr(self=%x, %s, 0) => %x: %s\n",
-                        (unsigned)self, key, (unsigned)h2g(p), p);
-            }
-            cgi_force_ret(env, h2g(p));
-            return;
-        }
+    if (!strcmp(key, "CSRFTOKEN") || !strcmp(key, "CSRFToken")) {
+        cgi_force_qentry_getstr(env, self, key, newmem,
+                                get_guest_env("HTTP_X_CSRFTOKEN", env_list));
+        return;
+    }
 
-        target_ulong dup = cgi_fake_heap_strdup(p);
-        if (!dup) {
-            if (hook_debug) {
-                fprintf(stderr, "[HOOK] getstr(self=%x, %s, 1) => fake heap alloc failed\n",
-                        (unsigned)self, key);
-            }
-            return;
-        }
+    if (!strcmp(key, "remote_addr")) {
+        cgi_force_qentry_getstr(env, self, key, newmem,
+                                get_guest_env("REMOTE_ADDR", env_list));
+        return;
+    }
 
-        if (hook_debug) {
-            fprintf(stderr, "[HOOK] getstr(self=%x, %s, 1) => fake %x: %s\n",
-                    (unsigned)self, key, (unsigned)dup, g2h_untagged(dup));
-        }
-        cgi_force_ret(env, dup);
+    if (!strcmp(key, "server_name")) {
+        cgi_force_qentry_getstr(env, self, key, newmem,
+                                get_guest_env("SERVER_NAME", env_list));
+        return;
+    }
+
+    if (!strcmp(key, "server_addr")) {
+        cgi_force_qentry_getstr(env, self, key, newmem,
+                                get_guest_env("SERVER_ADDR", env_list));
         return;
     }
 }
