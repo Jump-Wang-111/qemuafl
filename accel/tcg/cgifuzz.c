@@ -482,23 +482,112 @@ char *get_guest_env(const char *name, char **env_list) {
     return NULL;
 }
 
-int get_role_by_env(char **env_list) {
-    char *p;
+static int cgi_role_id_from_value(const char *value) {
 
-    p = get_guest_env("HTTP_USERNAME", env_list);
-    if (p && *p) {
-        if (!strcasecmp(p, "admin"))    return 4;
-        if (!strcasecmp(p, "operator")) return 3;
-        if (!strcasecmp(p, "user"))     return 2;
-        if (!strcasecmp(p, "guest"))    return 1;
+    if (!value || !*value) return 0;
+    if (!strcasecmp(value, "admin"))    return 4;
+    if (!strcasecmp(value, "operator")) return 3;
+    if (!strcasecmp(value, "user"))     return 2;
+    if (!strcasecmp(value, "guest"))    return 1;
+    return 0;
+
+}
+
+static int cgi_b64_value(int ch) {
+
+    if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+    if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
+    if (ch >= '0' && ch <= '9') return ch - '0' + 52;
+    if (ch == '+') return 62;
+    if (ch == '/') return 63;
+    if (ch == '=') return -2;
+    return -1;
+
+}
+
+static int cgi_basic_auth_has_user_pass(const char *value) {
+
+    if (!value || strncasecmp(value, "Basic", 5)) return 0;
+
+    const char *p = value + 5;
+    while (*p == ' ' || *p == '\t') p++;
+    if (!*p) return 0;
+
+    char decoded[2048];
+    size_t out = 0;
+    int quartet[4];
+    int qcnt = 0;
+
+    for (; *p && *p != '\r' && *p != '\n' && *p != ' ' && *p != '\t'; p++) {
+        int v = cgi_b64_value((unsigned char)*p);
+        if (v == -1) return 0;
+        quartet[qcnt++] = v;
+        if (qcnt != 4) continue;
+
+        if (quartet[0] < 0 || quartet[1] < 0) return 0;
+
+        unsigned triple = ((unsigned)quartet[0] << 18) |
+                          ((unsigned)quartet[1] << 12);
+        if (quartet[2] >= 0) triple |= (unsigned)quartet[2] << 6;
+        if (quartet[3] >= 0) triple |= (unsigned)quartet[3];
+
+        if (out < sizeof(decoded)) decoded[out++] = (char)((triple >> 16) & 0xff);
+        if (quartet[2] != -2 && out < sizeof(decoded)) {
+            decoded[out++] = (char)((triple >> 8) & 0xff);
+        }
+        if (quartet[3] != -2 && out < sizeof(decoded)) {
+            decoded[out++] = (char)(triple & 0xff);
+        }
+
+        qcnt = 0;
+        if (quartet[2] == -2 || quartet[3] == -2) {
+            p++;
+            break;
+        }
     }
 
-    return 0;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p || qcnt || !out) return 0;
+
+    char *colon = memchr(decoded, ':', out);
+    if (!colon) return 0;
+    if (colon == decoded) return 0;
+    if ((size_t)(colon - decoded) + 1 >= out) return 0;
+
+    return 1;
+
+}
+
+static int cgi_auth_material_valid(char **env_list) {
+
+    char *user = get_guest_env("HTTP_USERNAME", env_list);
+    char *pass = get_guest_env("HTTP_PASSWORD", env_list);
+    char *auth = get_guest_env("HTTP_AUTHORIZATION", env_list);
+
+    if (!user || !*user) return 0;
+    if (!pass || !*pass) return 0;
+    if (!cgi_basic_auth_has_user_pass(auth)) return 0;
+    return 1;
+
+}
+
+int get_role_by_env(char **env_list) {
+    char *p = get_guest_env("AFL_CGI_ROLE", env_list);
+
+    if (!p || !*p || !strcasecmp(p, "none")) {
+        return 0;
+    }
+
+    int role = cgi_role_id_from_value(p);
+    if (!role || !cgi_auth_material_valid(env_list)) return 0;
+    return role;
 }
 
 void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
     
     cgi_fake_heap_reset();
+    path_info[0] = '\0';
+    path_info_len = 0;
 
     char *env_st = input, *ed = env_st + length, *env_end = env_st;
     char **o_env_list = env_list;
@@ -513,16 +602,26 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
             break;
         }
 
-        while (*env_end != '\n') env_end++;
-        *env_end++ = '\0';
+        env_end = memchr(env_st, '\n', ed - env_st);
+        char *next_env = env_end ? env_end + 1 : ed;
+        char *line_end = env_end ? env_end : ed;
+        if (line_end > env_st && line_end[-1] == '\r') {
+            line_end--;
+        }
 
-        strncpy(env_strs, env_st, ENV_MAX_LEN - ENV_NAME_MAX_LEN);
+        size_t line_len = line_end - env_st;
+        size_t copy_len = line_len;
+        if (copy_len >= ENV_MAX_LEN - ENV_NAME_MAX_LEN) {
+            copy_len = ENV_MAX_LEN - ENV_NAME_MAX_LEN - 1;
+        }
+        memcpy(env_strs, env_st, copy_len);
+        env_strs[copy_len] = '\0';
         gval_from_h(env_list) = h2g(env_strs);
-        if (cgi_debug_env) fprintf(stderr, "[DEBUG] Add env: %s\n", env_st);
+        if (cgi_debug_env) fprintf(stderr, "[DEBUG] Add env: %s\n", env_strs);
 
         env_strs += ENV_MAX_LEN;
         env_list = (char **)((uint64_t)env_list + sizeof(target_ulong));
-        env_st = env_end;
+        env_st = next_env;
     }
 
     char *p = get_guest_env("PATH_INFO", o_env_list);

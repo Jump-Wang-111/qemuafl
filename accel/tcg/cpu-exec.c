@@ -1767,6 +1767,12 @@ void cgi_get_qentry_getstr_arg(CPUArchState *env, char **env_list) {
         return;
     }
 
+    if (!strcmp(key, "password")) {
+        cgi_force_qentry_getstr(env, self, key, newmem,
+                                get_guest_env("HTTP_PASSWORD", env_list));
+        return;
+    }
+
     if (!strcmp(key, "CSRFTOKEN") || !strcmp(key, "CSRFToken")) {
         cgi_force_qentry_getstr(env, self, key, newmem,
                                 get_guest_env("HTTP_X_CSRFTOKEN", env_list));
