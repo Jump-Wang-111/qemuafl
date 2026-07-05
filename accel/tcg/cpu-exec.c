@@ -1774,8 +1774,27 @@ void cgi_get_qentry_getstr_arg(CPUArchState *env, char **env_list) {
     }
 
     if (!strcmp(key, "CSRFTOKEN") || !strcmp(key, "CSRFToken")) {
+        const char *token = get_guest_env("HTTP_X_CSRFTOKEN", env_list);
+        if ((!token || !*token) && get_role_by_env(env_list)) {
+            /* Keep an authorized synthetic session internally consistent.
+               The request header remains empty, so the target still observes
+               and rejects the CSRF mismatch. */
+            target_ulong synthetic =
+                cgi_fake_heap_strdup("afl-context-csrf");
+            if (synthetic) {
+                if (hook_debug) {
+                    fprintf(stderr,
+                            "[HOOK] getstr(self=%x, %s, %u) => fake %x: %s\n",
+                            (unsigned)self, key, (unsigned)newmem,
+                            (unsigned)synthetic,
+                            (char *)g2h_untagged(synthetic));
+                }
+                cgi_force_ret(env, synthetic);
+            }
+            return;
+        }
         cgi_force_qentry_getstr(env, self, key, newmem,
-                                get_guest_env("HTTP_X_CSRFTOKEN", env_list));
+                                token);
         return;
     }
 
