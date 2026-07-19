@@ -36,7 +36,9 @@
 #define ENV_MAX_LEN         4096
 #define FD_ENTRY_LEN        (4096 * 4)
 #define ENV_MAX_ENTRY       256
+#define ENV_FIXED_RESERVE   16
 #define ENV_NAME_MAX_LEN    128
+#define CGI_HARNESS_ERROR_EXIT 125
 #define NEW_ENV_FLAG        "NEW_ENV"
 #define QENTRY_DICT_PREFIX  "__AFL_QENTRY_DICT__:"
 #define CGI_FEEDBACK_MAX_ENVS 32

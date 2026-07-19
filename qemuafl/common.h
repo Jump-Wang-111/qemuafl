@@ -103,7 +103,9 @@ extern abi_ulong       afl_persistent_ret_addr;
 extern u8              afl_compcov_level;
 extern unsigned char   afl_fork_child;
 extern unsigned int    afl_forksrv_pid;
+extern unsigned int    afl_fork_child_pid;
 extern unsigned char   is_persistent;
+extern unsigned char   persistent_virtual_pid;
 extern target_long     persistent_stack_offset;
 extern unsigned char   persistent_first_pass;
 extern unsigned char   persistent_exits;
@@ -195,4 +197,3 @@ static inline int afl_must_instrument(target_ulong addr) {
 }
 
 #endif
-

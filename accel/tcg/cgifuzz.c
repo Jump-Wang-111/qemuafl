@@ -583,6 +583,59 @@ int get_role_by_env(char **env_list) {
     return role;
 }
 
+static bool cgi_prepare_stdin_pipe(int fds[2], size_t body_len) {
+
+    if (pipe(fds) != 0) {
+        fprintf(stderr, "[ERROR] Fail to create pipe for stdin redirection\n");
+        return false;
+    }
+
+    if (body_len > 0) {
+        int capacity = fcntl(fds[1], F_GETPIPE_SZ);
+
+        if (capacity < 0 || (size_t)capacity < body_len) {
+            int grown = fcntl(fds[1], F_SETPIPE_SZ, (int)body_len);
+            if (grown < 0) {
+                fprintf(stderr,
+                        "[ERROR] Cannot stage %zu-byte CGI body in stdin "
+                        "pipe: %s\n",
+                        body_len, strerror(errno));
+                close(fds[0]);
+                close(fds[1]);
+                return false;
+            }
+            if ((size_t)grown < body_len) {
+                fprintf(stderr,
+                        "[ERROR] Cannot stage %zu-byte CGI body in stdin "
+                        "pipe: capacity is %d bytes\n",
+                        body_len, grown);
+                close(fds[0]);
+                close(fds[1]);
+                return false;
+            }
+        }
+    }
+
+    return true;
+
+}
+
+static bool cgi_write_all(int fd, const char *data, size_t length) {
+
+    size_t offset = 0;
+    while (offset < length) {
+        ssize_t written = write(fd, data + offset, length - offset);
+        if (written > 0) {
+            offset += (size_t)written;
+            continue;
+        }
+        if (written < 0 && errno == EINTR) continue;
+        return false;
+    }
+    return true;
+
+}
+
 void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
     
     cgi_fake_heap_reset();
@@ -594,6 +647,8 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
 
     char *binary_content_ptr = NULL;
     int binary_content_len = 0;
+    size_t input_entries = 0;
+    bool entry_limit_reported = false;
 
     while (env_st < ed) {
         if (strncmp(env_st, "CONTENT=", 8) == 0) {
@@ -610,6 +665,17 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
         }
 
         size_t line_len = line_end - env_st;
+        if (input_entries >= ENV_MAX_ENTRY) {
+            if (cgi_debug_env && !entry_limit_reported) {
+                fprintf(stderr,
+                        "[WARN] CGI input environment entry limit reached; "
+                        "ignoring additional entries\n");
+                entry_limit_reported = true;
+            }
+            env_st = next_env;
+            continue;
+        }
+
         size_t copy_len = line_len;
         if (copy_len >= ENV_MAX_LEN - ENV_NAME_MAX_LEN) {
             copy_len = ENV_MAX_LEN - ENV_NAME_MAX_LEN - 1;
@@ -621,6 +687,7 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
 
         env_strs += ENV_MAX_LEN;
         env_list = (char **)((uint64_t)env_list + sizeof(target_ulong));
+        input_entries++;
         env_st = next_env;
     }
 
@@ -633,9 +700,8 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
     }
 
     int fds[2];
-    if (pipe(fds)) {
-        fprintf(stderr, "[ERROR] Fail to create pipe for stdin redirection\n");
-        return;
+    if (!cgi_prepare_stdin_pipe(fds, (size_t)binary_content_len)) {
+        exit(CGI_HARNESS_ERROR_EXIT);
     }
 
     if (dup2(fds[0], STDIN_FILENO) == -1) {
@@ -648,8 +714,11 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
 
     if (binary_content_ptr && binary_content_len > 0) {
         if (cgi_debug_env) fprintf(stderr, "[DEBUG] Redirect stdin: %s\n", binary_content_ptr);
-        if (write(fds[1], binary_content_ptr, binary_content_len) == -1) {
+        if (!cgi_write_all(fds[1], binary_content_ptr,
+                           (size_t)binary_content_len)) {
             fprintf(stderr, "[ERROR] Fail to write to pipe\n");
+            close(fds[1]);
+            exit(CGI_HARNESS_ERROR_EXIT);
         }
     }
     close(fds[1]);

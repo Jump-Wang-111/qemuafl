@@ -120,7 +120,9 @@ static uint64_t afl_pc_sample_idx;
 
 unsigned char afl_fork_child;
 unsigned int  afl_forksrv_pid;
+unsigned int  afl_fork_child_pid;
 unsigned char is_persistent;
+unsigned char persistent_virtual_pid;
 target_long   persistent_stack_offset;
 unsigned char persistent_first_pass = 1;
 unsigned char persistent_exits;
@@ -847,6 +849,9 @@ void afl_setup(void) {
   if (is_persistent)
     afl_persistent_addr = strtoll(getenv("AFL_QEMU_PERSISTENT_ADDR"), NULL, 0);
 
+  if (is_persistent && getenv("AFL_QEMU_PERSISTENT_VIRTUAL_PID"))
+    persistent_virtual_pid = 1;
+
   if (getenv("AFL_QEMU_PERSISTENT_RET"))
     afl_persistent_ret_addr =
         strtoll(getenv("AFL_QEMU_PERSISTENT_RET"), NULL, 0);
@@ -888,12 +893,13 @@ void afl_setup(void) {
   
   if (getenv("AFL_DEBUG")) {
     if (is_persistent)
-      fprintf(stderr, "Persistent: 0x%lx [0x%lx] %s%s%s\n",
+      fprintf(stderr, "Persistent: 0x%lx [0x%lx] %s%s%s%s\n",
               (unsigned long)afl_persistent_addr,
               (unsigned long)afl_persistent_ret_addr,
               (persistent_save_gpr ? "gpr ": ""),
               (persistent_memory ? "mem ": ""),
-              (persistent_exits ? "exits ": ""));
+              (persistent_exits ? "exits ": ""),
+              (persistent_virtual_pid ? "virtual-pid ": ""));
   }
 
 }
@@ -911,7 +917,7 @@ void afl_forkserver(CPUState *cpu) {
   target_ulong new_fake_heap = 0;
   target_ulong i = 0;
   target_ulong old_entries = 0;
-  target_ulong new_entries = ENV_MAX_ENTRY;
+  target_ulong new_entries = ENV_MAX_ENTRY + ENV_FIXED_RESERVE;
   target_ulong new_env_list = 0;
   target_ulong new_env_strs = 0;
 
@@ -1171,6 +1177,7 @@ void afl_forkserver(CPUState *cpu) {
         /* Child process. Close descriptors and run free. */
 
         afl_fork_child = 1;
+        afl_fork_child_pid = getpid();
         close(FORKSRV_FD);
         close(FORKSRV_FD + 1);
         close(t_fd[0]);
