@@ -1842,7 +1842,17 @@ void cgi_get_free_arg(CPUArchState *env) {
 }
 
 void cgi_get_call_ret(CPUArchState *env, target_ulong pc) {
-  
+
+  /* qEntry method addresses are learned after qEntry returns. Dispatch these
+     hooks here so an already translated method TB cannot permanently miss
+     the hook merely because it was translated before runtime resolution. */
+  if (hook[QENTRY_GETINT].enabled && pc == hook[QENTRY_GETINT].addr) {
+    cgi_get_qentry_getint_arg(env, env_list);
+  }
+  if (hook[QENTRY_GETSTR].enabled && pc == hook[QENTRY_GETSTR].addr) {
+    cgi_get_qentry_getstr_arg(env, env_list);
+  }
+
   cgi_get_qentry_ret(env, pc);
 
   if (pc == hook[QENTRY_GETINT].ret_addr) {
