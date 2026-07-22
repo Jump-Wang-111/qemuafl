@@ -8819,7 +8819,11 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
     case TARGET_NR_execve:
         {
             char **argp = NULL, **envp = NULL;
+            char **oracle_exec_envp = NULL;
+            char **exec_envp = NULL;
             int argc, envc;
+            int oracle_envc = 0;
+            int oracle_env_capacity = 0;
             abi_ulong gp;
             abi_ulong guest_argp;
             abi_ulong guest_envp;
@@ -8875,6 +8879,10 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
                 envc++;
             }
 
+            if (cgi_command_oracle_feature_enabled()) {
+                oracle_env_capacity = 5;
+            }
+
             argp = g_new0(char *, argc + 1);
             envp = g_new0(char *, envc + 1);
 
@@ -8901,9 +8909,50 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
                 total_size += strlen(*q) + 1;
             }
             *q = NULL;
+            exec_envp = envp;
 
             if (!(p = lock_user_string(arg1)))
                 goto execve_efault;
+
+            if (oracle_env_capacity && !strcmp(p, "/bin/sh")) {
+                const char *testcase_id = cgi_command_oracle_testcase_id();
+                const char *oracle_names[] = {
+                    AFL_CGI_COMMAND_ORACLE_ENV,
+                    AFL_CGI_WORKER_ID_ENV,
+                    AFL_CGI_TESTCASE_ID_ENV,
+                    CGI_CMD_ORACLE_LOG_ENV,
+                    CGI_CMD_ORACLE_SIGNAL_ENV,
+                };
+                const char *oracle_values[] = {
+                    getenv(AFL_CGI_COMMAND_ORACLE_ENV),
+                    getenv(AFL_CGI_WORKER_ID_ENV),
+                    testcase_id,
+                    getenv(CGI_CMD_ORACLE_LOG_ENV),
+                    getenv(CGI_CMD_ORACLE_SIGNAL_ENV),
+                };
+
+                if (!testcase_id || !*testcase_id) {
+                    testcase_id = getenv(AFL_CGI_TESTCASE_ID_ENV);
+                    oracle_values[2] = testcase_id;
+                }
+
+                if (testcase_id && *testcase_id) {
+                    oracle_exec_envp = g_new0(
+                        char *, envc + oracle_env_capacity + 1);
+                    for (int i = 0; i < oracle_env_capacity; i++) {
+                        const char *value = oracle_values[i];
+                        oracle_exec_envp[i] = g_strdup_printf(
+                            "%s=%s", oracle_names[i], value ? value : "");
+                        total_size += strlen(oracle_exec_envp[i]) + 1;
+                        oracle_envc++;
+                    }
+                    for (int i = 0; i <= envc; i++) {
+                        oracle_exec_envp[oracle_env_capacity + i] = envp[i];
+                    }
+                    exec_envp = oracle_exec_envp;
+                }
+            }
+
             /* Although execve() is not an interruptible syscall it is
              * a special case where we must use the safe_syscall wrapper:
              * if we allow a signal to happen before we make the host
@@ -8914,7 +8963,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
              * before the execve completes and makes it the other
              * program's problem.
              */
-            ret = get_errno(safe_execve(p, argp, envp));
+            ret = get_errno(safe_execve(p, argp, exec_envp));
             unlock_user(p, arg1, 0);
 
             goto execve_end;
@@ -8937,8 +8986,12 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
                     break;
                 unlock_user(*q, addr, 0);
             }
+            for (int i = 0; i < oracle_envc; i++) {
+                g_free(oracle_exec_envp[i]);
+            }
 
             g_free(argp);
+            g_free(oracle_exec_envp);
             g_free(envp);
         }
         return ret;

@@ -46,6 +46,12 @@
 
 #define AFL_G2H g2h_untagged
 
+#define AFL_CGI_COMMAND_ORACLE_ENV "AFL_CGI_COMMAND_ORACLE"
+#define AFL_CGI_TESTCASE_ID_ENV    "AFL_CGI_TESTCASE_ID"
+#define AFL_CGI_WORKER_ID_ENV      "AFL_CGI_WORKER_ID"
+#define CGI_CMD_ORACLE_LOG_ENV     "CGI_CMD_ORACLE_LOG"
+#define CGI_CMD_ORACLE_SIGNAL_ENV  "CGI_CMD_ORACLE_SIGNAL"
+
 #if defined(TARGET_X86_64)
 #define api_regs x86_64_regs
 #elif defined(TARGET_I386)
@@ -130,6 +136,8 @@ void afl_setup(void);
 void afl_forkserver(CPUState *cpu);
 void afl_persistent_iter(CPUArchState *env);
 void afl_persistent_loop(CPUArchState *env);
+int cgi_command_oracle_feature_enabled(void);
+const char *cgi_command_oracle_testcase_id(void);
 
 // void afl_debug_dump_saved_regs(void);
 

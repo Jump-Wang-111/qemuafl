@@ -115,6 +115,7 @@ bool cgi_debug_env = false;
 bool cgi_test_crash = false;
 bool cgi_debug = false;
 bool hook_debug = false;
+static char command_oracle_testcase_id[96];
 
 static int cgi_flag_value_enabled(const char *value, int default_value) {
     if (!value || !*value) {
@@ -156,6 +157,14 @@ int cgi_envbridge_feature_enabled(void) {
 int cgi_context_feature_enabled(void) {
     return cgi_flag_enabled_compat(CGI_ENABLE_CONTEXT_ENV,
                                    AFL_CGI_ENABLE_CONTEXT_ENV, 1);
+}
+
+int cgi_command_oracle_feature_enabled(void) {
+    return cgi_flag_value_enabled(getenv(AFL_CGI_COMMAND_ORACLE_ENV), 0);
+}
+
+const char *cgi_command_oracle_testcase_id(void) {
+    return command_oracle_testcase_id;
 }
 
 static void reset_hook_state(int idx) {
@@ -649,6 +658,28 @@ void set_guest_env(char *input, int length, char **env_list, char *env_strs) {
     int binary_content_len = 0;
     size_t input_entries = 0;
     bool entry_limit_reported = false;
+
+    command_oracle_testcase_id[0] = '\0';
+    if (cgi_command_oracle_feature_enabled()) {
+        const guchar *hash_input = (const guchar *)(length ? input : "");
+        char *digest = g_compute_checksum_for_data(G_CHECKSUM_SHA256,
+                                                   hash_input,
+                                                   (gsize)length);
+
+        if (!digest) {
+            fprintf(stderr, "[ERROR] Fail to hash CGI command-oracle input\n");
+            exit(CGI_HARNESS_ERROR_EXIT);
+        }
+
+        snprintf(command_oracle_testcase_id,
+                 sizeof(command_oracle_testcase_id),
+                 "sha256:%s:length:%d", digest, length);
+        if (cgi_debug_env) {
+            fprintf(stderr, "[DEBUG] Set command-oracle testcase id: %s\n",
+                    command_oracle_testcase_id);
+        }
+        g_free(digest);
+    }
 
     while (env_st < ed) {
         if (strncmp(env_st, "CONTENT=", 8) == 0) {

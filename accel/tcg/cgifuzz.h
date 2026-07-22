@@ -173,6 +173,8 @@ void resolve_hook_addrs(void);
 int cgi_envbridge_feature_enabled(void);
 int cgi_feedback_feature_enabled(void);
 int cgi_context_feature_enabled(void);
+int cgi_command_oracle_feature_enabled(void);
+const char *cgi_command_oracle_testcase_id(void);
 
 char *get_guest_env(const char *name, char **env_list);
 void set_guest_env(char *input, int length, char **env_list, char *env_strs);
