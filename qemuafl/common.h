@@ -117,6 +117,7 @@ extern unsigned char   persistent_first_pass;
 extern unsigned char   persistent_exits;
 extern unsigned char   persistent_save_gpr;
 extern unsigned char   persistent_memory;
+extern unsigned char   persistent_memory_tracking;
 extern int             persisent_retaddr_offset;
 extern int             use_qasan;
 extern __thread int    cur_block_is_good;
@@ -151,7 +152,10 @@ void afl_float_compcov_log_80(target_ulong cur_loc, floatx80 arg1,
                               floatx80 arg2);
 
 abi_ulong afl_get_brk(void);
-abi_ulong afl_set_brk(abi_ulong new_brk);
+abi_ulong afl_get_brk_page(void);
+void afl_set_brk_state(abi_ulong new_brk, abi_ulong new_brk_page);
+abi_ulong afl_get_mmap_next_start(void);
+void afl_set_mmap_next_start(abi_ulong new_mmap_next_start);
 
 #if defined(TARGET_X86_64) || defined(TARGET_I386) || defined(TARGET_AARCH64) || defined(TARGET_ARM) || defined(TARGET_MIPS) || defined(TARGET_MIPS64) || defined(TARGET_PPC)
 void afl_save_regs(struct api_regs* regs, CPUArchState* env);

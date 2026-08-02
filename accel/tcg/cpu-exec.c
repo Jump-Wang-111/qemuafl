@@ -128,6 +128,7 @@ unsigned char persistent_first_pass = 1;
 unsigned char persistent_exits;
 unsigned char persistent_save_gpr;
 unsigned char persistent_memory;
+unsigned char persistent_memory_tracking;
 int           persisent_retaddr_offset;
 
 struct api_regs saved_regs;
@@ -340,6 +341,8 @@ struct saved_region {
 };
 
 abi_ulong saved_brk;
+abi_ulong saved_brk_page;
+abi_ulong saved_mmap_next_start;
 int lkm_snapshot;
 struct saved_region* memory_snapshot;
 size_t memory_snapshot_len;
@@ -347,6 +350,8 @@ size_t memory_snapshot_len;
 static void collect_memory_snapshot(void) {
 
   saved_brk = afl_get_brk();
+  saved_brk_page = afl_get_brk_page();
+  saved_mmap_next_start = afl_get_mmap_next_start();
 
   FILE *fp;
   char *line = NULL;
@@ -430,8 +435,6 @@ static void collect_memory_snapshot(void) {
 
 static void restore_memory_snapshot(void) {
 
-  afl_set_brk(saved_brk);
-  
   if (lkm_snapshot) {
   
     afl_snapshot_restore();
@@ -451,6 +454,8 @@ static void restore_memory_snapshot(void) {
   }
   
   afl_target_unmap_trackeds();
+  afl_set_brk_state(saved_brk, saved_brk_page);
+  afl_set_mmap_next_start(saved_mmap_next_start);
 
 }
 
@@ -2041,7 +2046,10 @@ void afl_persistent_loop(CPUArchState *env) {
 
     }
     
-    if (persistent_memory) collect_memory_snapshot();
+    if (persistent_memory) {
+      collect_memory_snapshot();
+      persistent_memory_tracking = 1;
+    }
     
     if (persistent_save_gpr) {
     

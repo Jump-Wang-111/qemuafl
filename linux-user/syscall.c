@@ -909,10 +909,12 @@ void target_set_brk(abi_ulong new_brk)
 abi_ulong afl_get_brk(void) {
   return target_brk;
 }
-abi_ulong afl_set_brk(abi_ulong new_brk) {
-  abi_ulong old_brk = target_brk;
+abi_ulong afl_get_brk_page(void) {
+  return brk_page;
+}
+void afl_set_brk_state(abi_ulong new_brk, abi_ulong new_brk_page) {
   target_brk = new_brk;
-  return old_brk;
+  brk_page = new_brk_page;
 }
 
 //#define DEBUGF_BRK(message, args...) do { fprintf(stderr, (message), ## args); } while (0)
