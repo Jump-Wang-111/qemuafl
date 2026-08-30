@@ -925,6 +925,13 @@ void afl_forkserver(CPUState *cpu) {
   target_ulong new_entries = ENV_MAX_ENTRY + ENV_FIXED_RESERVE;
   target_ulong new_env_list = 0;
   target_ulong new_env_strs = 0;
+  const char *restart_warmup_env =
+      getenv("AFL_QEMU_PERSISTENT_RESTART_WARMUP");
+  u8 *restart_warmup_buf = NULL;
+  u32 restart_warmup_len = 0;
+  u8 restart_warmup_enabled =
+      is_persistent && restart_warmup_env && *restart_warmup_env &&
+      strcmp(restart_warmup_env, "0");
 
   /* CGI fuzz */
 
@@ -1131,6 +1138,11 @@ void afl_forkserver(CPUState *cpu) {
 
   while (1) {
 
+    u8 *requested_buf = NULL;
+    u32 requested_len = 0;
+    u8 run_restart_warmup = 0;
+    u8 child_pid_sent = 0;
+
     /* Whoops, parent dead? */
 
     if (read(FORKSRV_FD, &was_killed, 4) != 4) {
@@ -1145,6 +1157,32 @@ void afl_forkserver(CPUState *cpu) {
       exit(2);
     }
 
+    if (restart_warmup_enabled && !restart_warmup_buf && sharedmem_fuzzing &&
+        shared_buf && shared_buf_len && *shared_buf_len &&
+        *shared_buf_len <= MAX_FILE) {
+
+      restart_warmup_len = *shared_buf_len;
+      restart_warmup_buf = malloc(restart_warmup_len);
+      if (!restart_warmup_buf) {
+
+        fprintf(stderr,
+                "[AFL] ERROR: could not allocate persistent restart "
+                "warmup\n");
+        exit(1);
+
+      }
+
+      memcpy(restart_warmup_buf, shared_buf, restart_warmup_len);
+      if (getenv("AFL_DEBUG")) {
+
+        fprintf(stderr,
+                "[AFL] DEBUG: cached %u-byte persistent restart warmup\n",
+                restart_warmup_len);
+
+      }
+
+    }
+
     /* If we stopped the child in persistent mode, but there was a race
        condition and afl-fuzz already issued SIGKILL, write off the old
        process. */
@@ -1157,6 +1195,37 @@ void afl_forkserver(CPUState *cpu) {
         fprintf(stderr, "[DEBUG] loc2");
         exit(8);
       }
+
+    }
+
+    run_restart_warmup =
+        restart_warmup_buf && !first_run && !child_stopped;
+    if (run_restart_warmup) {
+
+      requested_len = *shared_buf_len;
+      if (!requested_len || requested_len > MAX_FILE) {
+
+        fprintf(stderr,
+                "[AFL] ERROR: invalid input length before persistent restart "
+                "warmup: %u\n",
+                requested_len);
+        exit(1);
+
+      }
+
+      requested_buf = malloc(requested_len);
+      if (!requested_buf) {
+
+        fprintf(stderr,
+                "[AFL] ERROR: could not preserve input during persistent "
+                "restart warmup\n");
+        exit(1);
+
+      }
+
+      memcpy(requested_buf, shared_buf, requested_len);
+      memcpy(shared_buf, restart_warmup_buf, restart_warmup_len);
+      *shared_buf_len = restart_warmup_len;
 
     }
 
@@ -1200,6 +1269,64 @@ void afl_forkserver(CPUState *cpu) {
 
       close(TSL_FD);
 
+      if (run_restart_warmup) {
+
+        /* Keep the AFL timeout active while the replacement child executes
+           the hidden warmup. The warmup result is never attributed to the
+           current testcase. */
+        if (write(FORKSRV_FD + 1, &child_pid, 4) != 4) {
+
+          fprintf(stderr, "[DEBUG] loc5-warmup");
+          exit(5);
+
+        }
+        child_pid_sent = 1;
+
+        afl_wait_tsl(cpu, t_fd[0]);
+        if (waitpid(child_pid, &status, WUNTRACED) < 0) {
+
+          fprintf(stderr, "[DEBUG] loc6-warmup");
+          exit(6);
+
+        }
+
+        memcpy(shared_buf, requested_buf, requested_len);
+        *shared_buf_len = requested_len;
+        free(requested_buf);
+        requested_buf = NULL;
+
+        if (!WIFSTOPPED(status)) {
+
+          fprintf(stderr,
+                  "[AFL] ERROR: persistent restart warmup did not complete "
+                  "successfully (status=%d)\n",
+                  status);
+          exit(13);
+
+        }
+
+        memset(afl_area_ptr, 0, MAP_SIZE);
+        if (cgi_feedback) { memset(cgi_feedback, 0, sizeof(u32) * 5); }
+
+        if (kill(child_pid, SIGCONT)) {
+
+          perror("[AFL] ERROR: could not resume persistent child after "
+                 "restart warmup");
+          exit(13);
+
+        }
+
+        if (getenv("AFL_DEBUG")) {
+
+          fprintf(stderr,
+                  "[AFL] DEBUG: persistent replacement child %d completed "
+                  "restart warmup\n",
+                  child_pid);
+
+        }
+
+      }
+
     } else {
 
       /* Special handling for persistent mode: if the child is alive but
@@ -1212,7 +1339,7 @@ void afl_forkserver(CPUState *cpu) {
 
     /* Parent. */
 
-    if (write(FORKSRV_FD + 1, &child_pid, 4) != 4) {
+    if (!child_pid_sent && write(FORKSRV_FD + 1, &child_pid, 4) != 4) {
       fprintf(stderr, "[DEBUG] loc5");
       exit(5);
     }
