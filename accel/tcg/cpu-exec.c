@@ -1106,6 +1106,7 @@ void afl_forkserver(CPUState *cpu) {
 
   int first_run = 1;
   u32 warmup_fail_streak = 0;
+  u8 warmup_disabled = 0;
 
   if (sharedmem_fuzzing) {
 
@@ -1158,9 +1159,9 @@ void afl_forkserver(CPUState *cpu) {
       exit(2);
     }
 
-    if (restart_warmup_enabled && !restart_warmup_buf && sharedmem_fuzzing &&
-        shared_buf && shared_buf_len && *shared_buf_len &&
-        *shared_buf_len <= MAX_FILE) {
+    if (restart_warmup_enabled && !warmup_disabled && !restart_warmup_buf &&
+        sharedmem_fuzzing && shared_buf && shared_buf_len &&
+        *shared_buf_len && *shared_buf_len <= MAX_FILE) {
 
       restart_warmup_len = *shared_buf_len;
       restart_warmup_buf = malloc(restart_warmup_len);
@@ -1313,8 +1314,14 @@ void afl_forkserver(CPUState *cpu) {
           memset(afl_area_ptr, 0, MAP_SIZE);
           if (cgi_feedback) { memset(cgi_feedback, 0, sizeof(u32) * 5); }
 
-          if (++warmup_fail_streak >= 3 && restart_warmup_buf) {
+          if (++warmup_fail_streak >= 3 && !warmup_disabled) {
 
+            /* Disable for good. Clearing restart_warmup_buf alone is not
+               enough: the cache block above re-caches from shared_buf
+               whenever the buffer is NULL, which would silently undo the
+               disable on the next request (observed as a 100k-iteration
+               warmup crash loop before warmup_disabled was introduced). */
+            warmup_disabled = 1;
             free(restart_warmup_buf);
             restart_warmup_buf = NULL;
             restart_warmup_len = 0;
