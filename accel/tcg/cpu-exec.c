@@ -1105,6 +1105,7 @@ void afl_forkserver(CPUState *cpu) {
   afl_forksrv_pid = getpid();
 
   int first_run = 1;
+  u32 warmup_fail_streak = 0;
 
   if (sharedmem_fuzzing) {
 
@@ -1295,15 +1296,47 @@ void afl_forkserver(CPUState *cpu) {
         free(requested_buf);
         requested_buf = NULL;
 
+        /* A warmup that did not reach the persistent stop boundary must not
+           kill the forkserver: afl-fuzz arms its exec timeout over the warmup
+           (the replacement child's pid was already handed out), so under load
+           the timeout kill can land inside the warmup. Dying here would take
+           the whole instance down on every such event. Instead, drop the
+           partial warmup coverage, report the warmup child's status as this
+           request's outcome, and keep serving. After repeated failures, give
+           up on the warmup entirely and fall back to plain replacement. */
         if (!WIFSTOPPED(status)) {
 
           fprintf(stderr,
-                  "[AFL] ERROR: persistent restart warmup did not complete "
-                  "successfully (status=%d)\n",
+                  "[AFL] WARN: persistent restart warmup did not complete "
+                  "successfully (status=%d) - continuing\n",
                   status);
-          exit(13);
+          memset(afl_area_ptr, 0, MAP_SIZE);
+          if (cgi_feedback) { memset(cgi_feedback, 0, sizeof(u32) * 5); }
+
+          if (++warmup_fail_streak >= 3 && restart_warmup_buf) {
+
+            free(restart_warmup_buf);
+            restart_warmup_buf = NULL;
+            restart_warmup_len = 0;
+            fprintf(stderr,
+                    "[AFL] WARN: persistent restart warmup disabled after "
+                    "%u consecutive failures\n",
+                    warmup_fail_streak);
+
+          }
+
+          if (write(FORKSRV_FD + 1, &status, 4) != 4) {
+
+            fprintf(stderr, "[DEBUG] loc7");
+            exit(7);
+
+          }
+
+          continue;
 
         }
+
+        warmup_fail_streak = 0;
 
         memset(afl_area_ptr, 0, MAP_SIZE);
         if (cgi_feedback) { memset(cgi_feedback, 0, sizeof(u32) * 5); }
