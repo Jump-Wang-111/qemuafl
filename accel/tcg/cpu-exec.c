@@ -347,6 +347,84 @@ int lkm_snapshot;
 struct saved_region* memory_snapshot;
 size_t memory_snapshot_len;
 
+/* QASan shadow snapshot support (fix: shadow lives in host-side mmaps,
+ * which collect_memory_snapshot() does not roll back because it only
+ * snapshots guest-writable pages. Without this, persistent restore()
+ * leaves the shadow stale w.r.t. the rolled-back guest heap, producing
+ * deterministic false UAF reports each iteration and killing the child
+ * mid-iteration via queue_signal(). */
+extern void* __ag_high_shadow;
+extern void* __ag_low_shadow;
+struct shadow_region {
+  void*   addr;
+  size_t  size;
+  uint8_t* saved;
+};
+static struct shadow_region* shadow_snapshot;
+static size_t shadow_snapshot_len;
+
+#define AG_HIGH_SHADOW_ADDR  ((void*)0x02008fff7000ULL)
+#define AG_HIGH_SHADOW_SIZE  (0xdfff0000fffULL)
+#define AG_LOW_SHADOW_ADDR   ((void*)0x00007fff8000ULL)
+#define AG_LOW_SHADOW_SIZE   (0xfffefffULL)
+
+static void collect_qasan_shadow_snapshot(void) {
+
+  if (!__ag_low_shadow && !__ag_high_shadow) return;
+
+  FILE *fp = fopen("/proc/self/maps", "r");
+  if (!fp) return;
+
+  char *line = NULL; size_t len = 0; ssize_t n;
+  size_t allocd = 8;
+  shadow_snapshot = malloc(allocd * sizeof(struct shadow_region));
+  shadow_snapshot_len = 0;
+
+  while ((n = getline(&line, &len, fp)) != -1) {
+
+    uint64_t min, max, offset; int fmaj, fmin, inode;
+    char fr, fw, fx, fs; char path[512] = "";
+    int fields = sscanf(line, "%"SCNx64"-%"SCNx64" %c%c%c%c %"SCNx64
+                        " %x:%x %d %511s", &min, &max, &fr, &fw, &fx,
+                        &fs, &offset, &fmaj, &fmin, &inode, path);
+    if (fields < 10) continue;
+
+    if (fw != 'w') continue;
+
+    int in_low  = (min >= (uint64_t)AG_LOW_SHADOW_ADDR &&
+                   max <= (uint64_t)AG_LOW_SHADOW_ADDR + AG_LOW_SHADOW_SIZE);
+    int in_high = (min >= (uint64_t)AG_HIGH_SHADOW_ADDR &&
+                   max <= (uint64_t)AG_HIGH_SHADOW_ADDR + AG_HIGH_SHADOW_SIZE);
+    if (!in_low && !in_high) continue;
+
+    if (shadow_snapshot_len == allocd) {
+      allocd *= 2;
+      shadow_snapshot = realloc(shadow_snapshot,
+                                allocd * sizeof(struct shadow_region));
+    }
+    size_t i = shadow_snapshot_len++;
+    shadow_snapshot[i].addr  = (void*)min;
+    shadow_snapshot[i].size = max - min;
+    shadow_snapshot[i].saved = malloc(max - min);
+    memcpy(shadow_snapshot[i].saved, (void*)min, max - min);
+
+  }
+
+  free(line);
+  fclose(fp);
+
+}
+
+static void restore_qasan_shadow_snapshot(void) {
+
+  size_t i;
+  for (i = 0; i < shadow_snapshot_len; ++i)
+    memcpy(shadow_snapshot[i].addr, shadow_snapshot[i].saved,
+           shadow_snapshot[i].size);
+
+}
+
+
 static void collect_memory_snapshot(void) {
 
   saved_brk = afl_get_brk();
@@ -431,6 +509,8 @@ static void collect_memory_snapshot(void) {
     
   fclose(fp);
 
+  collect_qasan_shadow_snapshot();
+
 }
 
 static void restore_memory_snapshot(void) {
@@ -456,6 +536,8 @@ static void restore_memory_snapshot(void) {
   afl_target_unmap_trackeds();
   afl_set_brk_state(saved_brk, saved_brk_page);
   afl_set_mmap_next_start(saved_mmap_next_start);
+
+  restore_qasan_shadow_snapshot();
 
 }
 
